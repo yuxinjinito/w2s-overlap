@@ -134,6 +134,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--knn-k", type=int, default=20)
     parser.add_argument("--knn-keep-middle-frac", type=float, default=0.5)
     parser.add_argument("--knn-mixed-center", type=float, default=0.5)
+    parser.add_argument(
+        "--knn-reference-cross-fit",
+        action="store_true",
+        help=(
+            "Label weak_train reference points weak-correct/weak-wrong using "
+            "cross-fitted (out-of-fold) weak-probe predictions instead of "
+            "in-sample predictions. Avoids the kNN saturation that happens when "
+            "the probe is near-perfect on its own training set."
+        ),
+    )
+    parser.add_argument("--cross-fit-folds", type=int, default=5)
     parser.add_argument("--random-control-count", type=int, default=3)
     parser.add_argument("--random-control-size", type=int, default=None)
     parser.add_argument("--random-unbalanced-size", type=int, default=None)
@@ -507,6 +518,46 @@ def score_closest_indices(
     }
 
 
+def cross_fitted_weak_probs(
+    activations: torch.Tensor,
+    labels: np.ndarray,
+    folds: int,
+    l2_penalty: float,
+    max_iter: int,
+    device: torch.device,
+    seed: int,
+) -> np.ndarray:
+    """Out-of-fold weak-probe probabilities on the weak_train reference set.
+
+    Each weak_train point is scored by a probe that was NOT trained on it: the
+    set is split into ``folds`` folds, and for each fold a probe is fit on the
+    other folds and used to predict the held-out fold. This gives honest
+    weak-correct / weak-wrong reference labels for the kNN filter and avoids the
+    in-sample saturation that occurs when the probe predicts its own training
+    data (an overfit probe labels almost every reference point weak-correct,
+    leaving no weak-wrong neighbors for the mixed-neighborhood signal).
+    """
+    n = activations.shape[0]
+    folds = max(2, min(folds, n))
+    order = np.random.default_rng(seed).permutation(n)
+    labels_t = torch.as_tensor(np.asarray(labels), dtype=torch.float32)
+    probs = np.zeros(n, dtype=np.float32)
+    for held_out in np.array_split(order, folds):
+        held_out_t = torch.as_tensor(held_out, dtype=torch.long)
+        train_mask = torch.ones(n, dtype=torch.bool)
+        train_mask[held_out_t] = False
+        train_idx_t = torch.nonzero(train_mask, as_tuple=False).squeeze(1)
+        probe = fit_probe(
+            activations[train_idx_t],
+            labels_t[train_idx_t],
+            l2_penalty,
+            max_iter,
+            device,
+        )
+        probs[held_out] = predict_probe(probe, activations[held_out_t], device)
+    return probs
+
+
 def compute_weak_train_knn_stats(
     reference_embeddings: torch.Tensor,
     query_embeddings: torch.Tensor,
@@ -794,7 +845,17 @@ def write_text_report(path: Path, summary: dict) -> None:
         "random_unbalanced",
     ]:
         if name in runs:
-            lines.append(f"- {name}: {runs[name]['eval']['accuracy']:.3f}")
+            acc = runs[name]["eval"]["accuracy"]
+            subset = summary.get("subset_summaries", {}).get(name)
+            strong_n = summary["actual_sizes"].get("strong_train")
+            if subset and subset.get("n") and strong_n:
+                kept = subset["n"]
+                lines.append(
+                    f"- {name}: {acc:.3f} "
+                    f"(kept {kept}/{strong_n} = {100.0 * kept / strong_n:.1f}% not filtered)"
+                )
+            else:
+                lines.append(f"- {name}: {acc:.3f}")
     random_unbalanced = summary.get("random_unbalanced_controls_summary")
     if random_unbalanced:
         lines.append(
@@ -868,7 +929,26 @@ def main() -> None:
     weak_probs_test = predict_probe(weak_probe, weak_acts["test"], device)
     weak_train_labels = split_labels(splits.weak_train)
     weak_preds_weak_train = (weak_probs_weak_train >= 0.5).astype(int)
-    weak_correct_weak_train = (weak_preds_weak_train == weak_train_labels).astype(int)
+    if args.knn_reference_cross_fit:
+        cross_fit_probs_weak_train = cross_fitted_weak_probs(
+            weak_acts["weak_train"],
+            weak_train_labels,
+            args.cross_fit_folds,
+            args.l2_penalty,
+            args.max_iter,
+            device,
+            args.seed,
+        )
+        reference_preds_weak_train = (cross_fit_probs_weak_train >= 0.5).astype(int)
+        weak_correct_weak_train = (reference_preds_weak_train == weak_train_labels).astype(int)
+        print(
+            "[cross-fit] weak_train reference accuracy: "
+            f"in-sample={float(np.mean(weak_preds_weak_train == weak_train_labels)):.3f}, "
+            f"cross-fitted={float(np.mean(weak_correct_weak_train)):.3f} "
+            f"(folds={max(2, min(args.cross_fit_folds, len(weak_train_labels)))})"
+        )
+    else:
+        weak_correct_weak_train = (weak_preds_weak_train == weak_train_labels).astype(int)
     weak_preds_strong = (weak_probs_strong >= 0.5).astype(int)
     weak_preds_test = (weak_probs_test >= 0.5).astype(int)
 
