@@ -145,6 +145,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--cross-fit-folds", type=int, default=5)
+    parser.add_argument(
+        "--diagnostics-only",
+        action="store_true",
+        help=(
+            "Compute weak_train reference accuracy and kNN saturation (fraction "
+            "of strong_train points whose k nearest neighbors are all weak-correct) "
+            "under in-sample vs cross-fitted reference labels, then exit before any "
+            "LoRA training. Cheap check for whether cross-fitting de-saturates kNN."
+        ),
+    )
     parser.add_argument("--random-control-count", type=int, default=3)
     parser.add_argument("--random-control-size", type=int, default=None)
     parser.add_argument("--random-unbalanced-size", type=int, default=None)
@@ -981,6 +991,63 @@ def main() -> None:
         weak_correct_weak_train,
         args.knn_k,
     )
+    if args.diagnostics_only:
+        insample_ref_correct = (weak_preds_weak_train == weak_train_labels).astype(int)
+        cross_fit_probs = cross_fitted_weak_probs(
+            weak_acts["weak_train"],
+            weak_train_labels,
+            args.cross_fit_folds,
+            args.l2_penalty,
+            args.max_iter,
+            device,
+            args.seed,
+        )
+        crossfit_ref_correct = ((cross_fit_probs >= 0.5).astype(int) == weak_train_labels).astype(int)
+
+        def _knn_saturation(reference_correct):
+            stats = compute_weak_train_knn_stats(
+                strong_acts["weak_train"],
+                strong_acts["strong_train"],
+                reference_correct,
+                args.knn_k,
+            )
+            all_correct = float(np.mean(stats["knn_correct_rate"] >= 1.0 - 1e-9))
+            return float(np.mean(reference_correct)), all_correct
+
+        in_ref_acc, in_sat = _knn_saturation(insample_ref_correct)
+        cf_ref_acc, cf_sat = _knn_saturation(crossfit_ref_correct)
+        diagnostics = {
+            "dataset": args.dataset,
+            "knn_k": args.knn_k,
+            "cross_fit_folds": args.cross_fit_folds,
+            "sizes": {
+                "weak_train": len(splits.weak_train),
+                "strong_train": len(splits.strong_train),
+                "test": len(splits.test),
+            },
+            "weak_train_reference_accuracy": {
+                "in_sample": in_ref_acc,
+                "cross_fitted": cf_ref_acc,
+            },
+            "knn_all_neighbors_weak_correct_fraction": {
+                "in_sample": in_sat,
+                "cross_fitted": cf_sat,
+            },
+        }
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "knn_saturation_diagnostic.json").write_text(
+            json.dumps(diagnostics, indent=2), encoding="utf-8"
+        )
+        print(
+            f"[diagnostics-only] {args.dataset}: "
+            f"reference acc in-sample={in_ref_acc:.3f} -> cross-fit={cf_ref_acc:.3f}; "
+            f"kNN all-{args.knn_k}-correct fraction "
+            f"in-sample={in_sat:.3f} -> cross-fit={cf_sat:.3f}"
+        )
+        print(f"  wrote {output_dir / 'knn_saturation_diagnostic.json'}")
+        del strong_acts
+        clear_memory()
+        return
     del strong_acts
     clear_memory()
 
