@@ -1,0 +1,14 @@
+# Core: inference, representation extraction, analysis, plotting
+torch
+transformers
+datasets
+accelerate
+huggingface_hub
+numpy
+pandas
+tqdm
+matplotlib
+Pillow
+
+# Parameter-efficient fine-tuning, used by the strong-model LoRA / W2S experiments
+peft

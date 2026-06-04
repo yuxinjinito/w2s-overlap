@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="680" viewBox="0 0 1000 680">
+<rect width="1000" height="680" fill="#ffffff"/>
+<text x="500.0" y="52.0" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="700" text-anchor="middle" fill="#202020">Answer/Class Count vs Weak-Confidence Skew</text>
+<text x="500.0" y="84.0" font-family="Arial, Helvetica, sans-serif" font-size="17" font-weight="400" text-anchor="middle" fill="#202020">Y-axis: fraction of examples with weak confidence &gt; 0.9</text>
+<rect x="120" y="110" width="690" height="410" fill="#fbfbfb" stroke="#cfcfcf"/>
+<line x1="120.0" y1="520.0" x2="810.0" y2="520.0" stroke="#e4e4e4" stroke-width="1.0"/>
+<text x="104.0" y="526.0" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="400" text-anchor="end" fill="#202020">0.0</text>
+<line x1="120.0" y1="423.5" x2="810.0" y2="423.5" stroke="#e4e4e4" stroke-width="1.0"/>
+<text x="104.0" y="429.5" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="400" text-anchor="end" fill="#202020">0.2</text>
+<line x1="120.0" y1="327.1" x2="810.0" y2="327.1" stroke="#e4e4e4" stroke-width="1.0"/>
+<text x="104.0" y="333.1" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="400" text-anchor="end" fill="#202020">0.4</text>
+<line x1="120.0" y1="230.6" x2="810.0" y2="230.6" stroke="#e4e4e4" stroke-width="1.0"/>
+<text x="104.0" y="236.6" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="400" text-anchor="end" fill="#202020">0.6</text>
+<line x1="120.0" y1="134.1" x2="810.0" y2="134.1" stroke="#e4e4e4" stroke-width="1.0"/>
+<text x="104.0" y="140.1" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="400" text-anchor="end" fill="#202020">0.8</text>
+<line x1="189.0" y1="110.0" x2="189.0" y2="520.0" stroke="#eeeeee" stroke-width="1.0"/>
+<text x="189.0" y="556.0" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="400" text-anchor="middle" fill="#202020">2</text>
+<line x1="465.0" y1="110.0" x2="465.0" y2="520.0" stroke="#eeeeee" stroke-width="1.0"/>
+<text x="465.0" y="556.0" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="400" text-anchor="middle" fill="#202020">3</text>
+<line x1="741.0" y1="110.0" x2="741.0" y2="520.0" stroke="#eeeeee" stroke-width="1.0"/>
+<text x="741.0" y="556.0" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="400" text-anchor="middle" fill="#202020">4</text>
+<text x="465.0" y="610.0" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="400" text-anchor="middle" fill="#202020">Original number of answer choices / classes</text>
+<text x="38" y="315" font-family="Arial, Helvetica, sans-serif" font-size="19" text-anchor="middle" fill="#202020" transform="rotate(-90 38 315)">High-confidence mass</text>
+<circle cx="169.0" cy="136.5" r="9.0" fill="#d95f02" fill-opacity="0.88" stroke="#ffffff" stroke-width="2"/>
+<text x="179.0" y="120.5" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="400" text-anchor="start" fill="#202020">Amazon</text>
+<circle cx="177.0" cy="191.5" r="9.0" fill="#d95f02" fill-opacity="0.88" stroke="#ffffff" stroke-width="2"/>
+<text x="187.0" y="181.5" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="400" text-anchor="start" fill="#202020">SST-2</text>
+<circle cx="185.0" cy="266.3" r="9.0" fill="#d95f02" fill-opacity="0.88" stroke="#ffffff" stroke-width="2"/>
+<text x="195.0" y="272.3" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="400" text-anchor="start" fill="#202020">Twitter Sentiment</text>
+<circle cx="193.0" cy="366.1" r="9.0" fill="#7570b3" fill-opacity="0.88" stroke="#ffffff" stroke-width="2"/>
+<text x="203.0" y="362.1" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="400" text-anchor="start" fill="#202020">BoolQ</text>
+<circle cx="201.0" cy="380.1" r="9.0" fill="#7570b3" fill-opacity="0.88" stroke="#ffffff" stroke-width="2"/>
+<text x="211.0" y="378.1" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="400" text-anchor="start" fill="#202020">WiC</text>
+<circle cx="209.0" cy="390.2" r="9.0" fill="#7570b3" fill-opacity="0.88" stroke="#ffffff" stroke-width="2"/>
+<text x="219.0" y="404.2" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="400" text-anchor="start" fill="#202020">CoLA</text>
+<circle cx="461.0" cy="396.5" r="9.0" fill="#7570b3" fill-opacity="0.88" stroke="#ffffff" stroke-width="2"/>
+<text x="471.0" y="384.5" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="400" text-anchor="start" fill="#202020">ANLI-R2</text>
+<circle cx="737.0" cy="412.0" r="9.0" fill="#1b9e77" fill-opacity="0.88" stroke="#ffffff" stroke-width="2"/>
+<text x="747.0" y="402.0" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="400" text-anchor="start" fill="#202020">SciQ</text>
+<circle cx="217.0" cy="434.6" r="9.0" fill="#1b9e77" fill-opacity="0.88" stroke="#ffffff" stroke-width="2"/>
+<text x="205.0" y="452.6" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="400" text-anchor="end" fill="#202020">PAWS</text>
+<circle cx="469.0" cy="457.3" r="9.0" fill="#1b9e77" fill-opacity="0.88" stroke="#ffffff" stroke-width="2"/>
+<text x="457.0" y="461.3" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="400" text-anchor="end" fill="#202020">Dream</text>
+<circle cx="745.0" cy="505.0" r="9.0" fill="#666666" fill-opacity="0.88" stroke="#ffffff" stroke-width="2"/>
+<text x="755.0" y="521.0" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="400" text-anchor="start" fill="#202020">HellaSwag</text>
+<rect x="675" y="130" width="280" height="130" rx="6" fill="#ffffff" stroke="#d5d5d5"/>
+<text x="689.0" y="156.0" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="700" text-anchor="start" fill="#202020">Skew bucket</text>
+<circle cx="693.0" cy="177.0" r="6.0" fill="#d95f02" fill-opacity="0.88" stroke="#ffffff" stroke-width="2"/>
+<text x="709.0" y="182.0" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="400" text-anchor="start" fill="#202020">very skewed/high-confidence</text>
+<circle cx="693.0" cy="201.0" r="6.0" fill="#7570b3" fill-opacity="0.88" stroke="#ffffff" stroke-width="2"/>
+<text x="709.0" y="206.0" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="400" text-anchor="start" fill="#202020">moderately skewed or mixed</text>
+<circle cx="693.0" cy="225.0" r="6.0" fill="#1b9e77" fill-opacity="0.88" stroke="#ffffff" stroke-width="2"/>
+<text x="709.0" y="230.0" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="400" text-anchor="start" fill="#202020">healthier / less skewed</text>
+<circle cx="693.0" cy="249.0" r="6.0" fill="#666666" fill-opacity="0.88" stroke="#ffffff" stroke-width="2"/>
+<text x="709.0" y="254.0" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="400" text-anchor="start" fill="#202020">low-confidence / weak probe near chance</text>
+<rect x="116" y="625" width="762" height="34" rx="6" fill="#f5f7f7" stroke="#d7dddd"/>
+<text x="497.0" y="648.0" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="400" text-anchor="middle" fill="#202020">Takeaway: answer count matters, but PAWS shows binary tasks do not automatically become highly skewed.</text>
+</svg>

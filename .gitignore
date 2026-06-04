@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Environments
+.venv/
+venv/
+env/
+
+# ML artifacts
+results/
+checkpoints/
+wandb/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Local credentials or machine-specific config
+.env
+.env.*
+secrets.*
+ssh_config*
+
+# Private research workspace: personal notes, mentor communications, meeting
+# transcripts, paper drafts, and machine-specific scripts. Never published.
+_private/
+
+# Backups
+*.bundle
+
+# System files
+.DS_Store
+.ipynb_checkpoints/
