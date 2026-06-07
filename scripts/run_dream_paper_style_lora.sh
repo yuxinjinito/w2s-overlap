@@ -7,6 +7,30 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+RUN_LOCK_FILE="${RUN_LOCK_FILE:-results/.locks/paper_style_lora.lock}"
+DISABLE_RUN_LOCK="${DISABLE_RUN_LOCK:-0}"
+if [[ "$DISABLE_RUN_LOCK" != "1" ]]; then
+  mkdir -p "$(dirname "$RUN_LOCK_FILE")"
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>"$RUN_LOCK_FILE"
+    if ! flock -n 9; then
+      echo "Another paper-style LoRA/diagnostic run is already active."
+      echo "Lock file: $RUN_LOCK_FILE"
+      echo "Set DISABLE_RUN_LOCK=1 only if you intentionally want concurrent heavy runs."
+      exit 2
+    fi
+  else
+    RUN_LOCK_DIR="${RUN_LOCK_FILE}.dir"
+    if ! mkdir "$RUN_LOCK_DIR" 2>/dev/null; then
+      echo "Another paper-style LoRA/diagnostic run is already active."
+      echo "Lock dir: $RUN_LOCK_DIR"
+      echo "Set DISABLE_RUN_LOCK=1 only if you intentionally want concurrent heavy runs."
+      exit 2
+    fi
+    trap 'rmdir "$RUN_LOCK_DIR" 2>/dev/null || true' EXIT
+  fi
+fi
+
 WEAK_MODEL="${WEAK_MODEL:-Qwen/Qwen1.5-0.5B}"
 STRONG_MODEL="${STRONG_MODEL:-meta-llama/Llama-3.1-8B}"
 DATASET="${DATASET:-dream}"
@@ -22,6 +46,9 @@ MAX_LENGTH="${MAX_LENGTH:-384}"
 ACTIVATION_MAX_LENGTH="${ACTIVATION_MAX_LENGTH:-}"
 ANSWER_SUFFIX="${ANSWER_SUFFIX:-$'\nIs the candidate answer correct? Answer:'}"
 SCIQ_USE_SUPPORT="${SCIQ_USE_SUPPORT:-0}"
+ANLI_ROUND="${ANLI_ROUND:-r2}"
+COMMITTEE_MEMBERS="${COMMITTEE_MEMBERS:-8}"
+COMMITTEE_KEEP_FRAC="${COMMITTEE_KEEP_FRAC:-0.5}"
 
 WEAK_BATCH_SIZE="${WEAK_BATCH_SIZE:-4}"
 ACTIVATION_BATCH_SIZE="${ACTIVATION_BATCH_SIZE:-1}"
@@ -87,6 +114,10 @@ fi
 if [[ "$SCIQ_USE_SUPPORT" == "1" ]]; then
   EXTRA_ARGS+=(--sciq-use-support)
 fi
+if [[ "$DATASET" == "anli" ]]; then
+  EXTRA_ARGS+=(--anli-round "$ANLI_ROUND")
+fi
+EXTRA_ARGS+=(--committee-members "$COMMITTEE_MEMBERS" --committee-keep-frac "$COMMITTEE_KEEP_FRAC")
 if [[ "$KNN_REFERENCE_CROSS_FIT" == "1" ]]; then
   EXTRA_ARGS+=(--knn-reference-cross-fit --cross-fit-folds "$CROSS_FIT_FOLDS")
 fi

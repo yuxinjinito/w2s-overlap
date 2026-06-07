@@ -236,7 +236,10 @@ def extract_final_token_activations(
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model_kwargs: dict[str, Any] = {"num_labels": 2}
+    model_kwargs: dict[str, Any] = {
+        "num_labels": 2,
+        "low_cpu_mem_usage": True,
+    }
     if dtype != "auto":
         model_kwargs["torch_dtype"] = dtype
     model = AutoModelForSequenceClassification.from_pretrained(model_name, **model_kwargs)

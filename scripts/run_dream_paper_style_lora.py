@@ -70,7 +70,13 @@ class LoraExample:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", choices=["dream", "sciq", "paws"], default="dream")
+    parser.add_argument("--dataset", choices=["dream", "sciq", "paws", "anli"], default="dream")
+    parser.add_argument(
+        "--anli-round",
+        choices=["r1", "r2", "r3"],
+        default="r2",
+        help="For ANLI only: which adversarial round to use (default r2, matching the survey).",
+    )
     parser.add_argument(
         "--sciq-use-support",
         action="store_true",
@@ -126,7 +132,9 @@ def parse_args() -> argparse.Namespace:
             "confidence_middle_balanced, confidence_high_unbalanced, "
             "confidence_high_balanced, knn_middle_unbalanced, "
             "knn_middle_balanced, knn_mixed_unbalanced, "
-            "knn_mixed_balanced, random_unbalanced, random_balanced."
+            "knn_mixed_balanced, committee_agree_unbalanced, committee_agree_balanced, "
+            "committee_disagree_unbalanced, committee_disagree_balanced, "
+            "random_unbalanced, random_balanced."
         ),
     )
     parser.add_argument("--residual-keep-middle-frac", type=float, default=0.5)
@@ -145,6 +153,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--cross-fit-folds", type=int, default=5)
+    parser.add_argument(
+        "--committee-members",
+        type=int,
+        default=8,
+        help=(
+            "Number of bootstrap weak probes in the query-by-committee disagreement "
+            "selector (committee_agree / committee_disagree)."
+        ),
+    )
+    parser.add_argument("--committee-keep-frac", type=float, default=0.5)
     parser.add_argument(
         "--diagnostics-only",
         action="store_true",
@@ -183,6 +201,10 @@ def requested_runs(args: argparse.Namespace) -> list[str]:
         "knn_middle_balanced",
         "knn_mixed_unbalanced",
         "knn_mixed_balanced",
+        "committee_agree_unbalanced",
+        "committee_agree_balanced",
+        "committee_disagree_unbalanced",
+        "committee_disagree_balanced",
         "random_unbalanced",
         "random_balanced",
     }
@@ -323,6 +345,77 @@ def load_paper_paws_splits(n_train: int, n_val: int, n_test: int, seed: int) -> 
     )
 
 
+ANLI_LABELS = {0: "entailment", 1: "neutral", 2: "contradiction"}
+
+
+def format_anli_paper_style(ex: dict, row_id: int, rng: random.Random) -> dict:
+    """Format ANLI (3-class NLI) as binary candidate-relation correctness.
+
+    A candidate relation is sampled (50% the gold relation, 50% a wrong one) and
+    the model judges whether it is correct, mirroring the SciQ candidate-answer
+    reduction. ANLI is adversarial, so the weak model is near chance here -- the
+    noisy-weak-label regime where overlap selection should matter if it is real.
+    """
+    gold = int(ex["label"])
+    hard_label = int(rng.random() < 0.5)
+    if hard_label:
+        candidate = ANLI_LABELS[gold]
+    else:
+        wrong = [name for key, name in ANLI_LABELS.items() if key != gold]
+        candidate = rng.choice(wrong)
+    txt = (
+        f"Premise: {ex['premise']}\n"
+        f"Hypothesis: {ex['hypothesis']}\n"
+        f"Q: What is the relationship from the premise to the hypothesis? A: {candidate}"
+    )
+    return {
+        "id": f"anli-{row_id}",
+        "source_id": f"anli-{row_id}",
+        "txt": txt,
+        "labels": hard_label,
+        "gt_labels": hard_label,
+    }
+
+
+def load_and_process_anli_split(split: str, n_docs: int, seed: int) -> Dataset:
+    raw = load_dataset("anli", split=split).shuffle(seed=seed)
+    raw = raw.filter(lambda ex: int(ex["label"]) in (0, 1, 2))
+    rng = random.Random(seed)
+    formatted_rows = [
+        format_anli_paper_style(ex, row_id=i, rng=rng)
+        for i, ex in enumerate(raw)
+    ]
+    ds = Dataset.from_list(formatted_rows)
+    ds = ds.filter(lambda ex: ex["txt"] != "")
+    ds = balance_binary_dataset(ds, seed)
+    if len(ds) < n_docs:
+        print(f"anli/{split} has < {n_docs} docs after balancing, using all {len(ds)}")
+    return ds.select(range(min(n_docs, len(ds))))
+
+
+def load_paper_anli_splits(
+    n_train: int,
+    n_val: int,
+    n_test: int,
+    seed: int,
+    anli_round: str,
+) -> SplitBundle:
+    train_pool = load_and_process_anli_split(f"train_{anli_round}", n_train + n_val, seed)
+    test = load_and_process_anli_split(f"test_{anli_round}", n_test, seed + 2)
+
+    val_count = min(n_val, len(train_pool))
+    val = train_pool.select(range(val_count))
+    train = train_pool.select(range(val_count, len(train_pool)))
+    train_halves = train.train_test_split(test_size=0.5, seed=seed)
+
+    return SplitBundle(
+        weak_train=train_halves["train"],
+        strong_train=train_halves["test"],
+        val=val,
+        test=test,
+    )
+
+
 def load_paper_style_splits(args: argparse.Namespace) -> SplitBundle:
     if args.dataset == "dream":
         return load_paper_dream_splits(args.n_train, args.n_val, args.n_test, args.seed)
@@ -336,6 +429,10 @@ def load_paper_style_splits(args: argparse.Namespace) -> SplitBundle:
         )
     if args.dataset == "paws":
         return load_paper_paws_splits(args.n_train, args.n_val, args.n_test, args.seed)
+    if args.dataset == "anli":
+        return load_paper_anli_splits(
+            args.n_train, args.n_val, args.n_test, args.seed, args.anli_round
+        )
     raise ValueError(f"Unsupported dataset: {args.dataset}")
 
 
@@ -371,6 +468,13 @@ def format_summary(args: argparse.Namespace) -> dict[str, str]:
             "label": "1 if the two sentences are semantically equivalent, else 0",
             "takeaway": "This run uses the original datacentric_w2s PAWS semantic-equivalence prompt.",
         }
+    if args.dataset == "anli":
+        return {
+            "task": "paper-style binary candidate-relation correctness (ANLI)",
+            "candidate_text": "'Premise: ...\\nHypothesis: ...\\nQ: What is the relationship ...? A: {candidate}'",
+            "label": "1 if the candidate relation (entailment/neutral/contradiction) is the gold ANLI label, else 0",
+            "takeaway": f"This run uses ANLI round {args.anli_round} as binary candidate-relation correctness (adversarial NLI -> weak model near chance).",
+        }
     raise ValueError(f"Unsupported dataset: {args.dataset}")
 
 
@@ -384,6 +488,114 @@ def split_texts(splits: SplitBundle) -> dict[str, list[str]]:
 
 def split_labels(split) -> np.ndarray:
     return np.array(split["labels"], dtype=int)
+
+
+def run_knn_saturation_diagnostics(
+    args: argparse.Namespace,
+    splits: SplitBundle,
+    texts: dict[str, list[str]],
+    device: torch.device,
+    output_dir: Path,
+) -> None:
+    """Run the lightweight kNN saturation check and exit before mapping/LoRA.
+
+    This intentionally does less than the full experiment: weak activations are
+    needed only on weak_train, and strong activations are needed only on
+    weak_train + strong_train. It does not extract test activations, fit
+    weak-to-strong maps, or train LoRA adapters.
+    """
+
+    weak_train_labels = split_labels(splits.weak_train)
+    weak_train_acts = extract_final_token_activations(
+        args.weak_model,
+        texts["weak_train"],
+        device,
+        args.torch_dtype,
+        args.activation_batch_size,
+        args.activation_max_length,
+        "extract weak_train activations",
+    )
+    weak_probe = fit_probe(
+        weak_train_acts,
+        torch.tensor(weak_train_labels, dtype=torch.float32),
+        args.l2_penalty,
+        args.max_iter,
+        device,
+    )
+    weak_probs_weak_train = predict_probe(weak_probe, weak_train_acts, device)
+    insample_ref_correct = ((weak_probs_weak_train >= 0.5).astype(int) == weak_train_labels).astype(int)
+
+    cross_fit_probs = cross_fitted_weak_probs(
+        weak_train_acts,
+        weak_train_labels,
+        args.cross_fit_folds,
+        args.l2_penalty,
+        args.max_iter,
+        device,
+        args.seed,
+    )
+    crossfit_ref_correct = ((cross_fit_probs >= 0.5).astype(int) == weak_train_labels).astype(int)
+
+    strong_diag_texts = texts["weak_train"] + texts["strong_train"]
+    strong_diag_acts = extract_final_token_activations(
+        args.strong_model,
+        strong_diag_texts,
+        device,
+        args.torch_dtype,
+        args.activation_batch_size,
+        args.activation_max_length,
+        "extract strong weak_train+strong_train activations",
+    )
+    n_weak_train = len(texts["weak_train"])
+    strong_weak_train_acts = strong_diag_acts[:n_weak_train]
+    strong_strong_train_acts = strong_diag_acts[n_weak_train:]
+
+    def _knn_saturation(reference_correct: np.ndarray) -> dict[str, float]:
+        stats = compute_weak_train_knn_stats(
+            strong_weak_train_acts,
+            strong_strong_train_acts,
+            reference_correct,
+            args.knn_k,
+        )
+        rates = stats["knn_correct_rate"]
+        return {
+            "reference_accuracy": float(np.mean(reference_correct)),
+            "all_neighbors_weak_correct_fraction": float(np.mean(rates >= 1.0 - 1e-9)),
+            "correct_neighbor_rate_mean": float(np.mean(rates)),
+            "correct_neighbor_rate_median": float(np.median(rates)),
+            "correct_neighbor_rate_min": float(np.min(rates)),
+            "correct_neighbor_rate_max": float(np.max(rates)),
+        }
+
+    diagnostics = {
+        "dataset": args.dataset,
+        "knn_k": args.knn_k,
+        "cross_fit_folds": args.cross_fit_folds,
+        "sizes": {
+            "weak_train": len(splits.weak_train),
+            "strong_train": len(splits.strong_train),
+            "test": len(splits.test),
+        },
+        "in_sample": _knn_saturation(insample_ref_correct),
+        "cross_fitted": _knn_saturation(crossfit_ref_correct),
+        "note": "diagnostics-only skips test activations, representation mapping, and LoRA training",
+    }
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "knn_saturation_diagnostic.json").write_text(
+        json.dumps(diagnostics, indent=2), encoding="utf-8"
+    )
+    print(
+        f"[diagnostics-only] {args.dataset}: "
+        f"reference acc in-sample={diagnostics['in_sample']['reference_accuracy']:.3f} "
+        f"-> cross-fit={diagnostics['cross_fitted']['reference_accuracy']:.3f}; "
+        f"kNN all-{args.knn_k}-correct fraction "
+        f"in-sample={diagnostics['in_sample']['all_neighbors_weak_correct_fraction']:.3f} "
+        f"-> cross-fit={diagnostics['cross_fitted']['all_neighbors_weak_correct_fraction']:.3f}"
+    )
+    print(f"  wrote {output_dir / 'knn_saturation_diagnostic.json'}")
+
+    del weak_train_acts, strong_diag_acts, strong_weak_train_acts, strong_strong_train_acts
+    clear_memory()
 
 
 def slice_activations(all_activations: torch.Tensor, sizes: dict[str, int]) -> dict[str, torch.Tensor]:
@@ -461,7 +673,7 @@ def weak_label_balance(
 def score_band_indices(scores: np.ndarray, keep_frac: float, mode: str) -> tuple[np.ndarray, dict[str, float | str]]:
     if not 0.0 < keep_frac <= 1.0:
         raise ValueError("keep_frac must be in (0, 1].")
-    if mode not in {"middle", "high"}:
+    if mode not in {"middle", "high", "low"}:
         raise ValueError(f"Unknown score band mode: {mode}")
 
     order = np.argsort(scores)
@@ -472,6 +684,10 @@ def score_band_indices(scores: np.ndarray, keep_frac: float, mode: str) -> tuple
         kept = order[start:end]
         dropped_low = start
         dropped_high = len(order) - end
+    elif mode == "low":
+        kept = order[:n_keep]
+        dropped_low = 0
+        dropped_high = len(order) - n_keep
     else:
         kept = order[-n_keep:]
         dropped_low = len(order) - n_keep
@@ -566,6 +782,48 @@ def cross_fitted_weak_probs(
         )
         probs[held_out] = predict_probe(probe, activations[held_out_t], device)
     return probs
+
+
+def committee_disagreement_on_strong_train(
+    weak_train_activations: torch.Tensor,
+    weak_train_labels: np.ndarray,
+    strong_train_activations: torch.Tensor,
+    members: int,
+    l2_penalty: float,
+    max_iter: int,
+    device: torch.device,
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Query-by-committee disagreement for each strong_train point.
+
+    Trains ``members`` weak probes on bootstrap resamples of weak_train and
+    predicts every strong_train point with each one. The committee's per-point
+    disagreement (standard deviation of the member probabilities) operationalizes
+    the active-learning "region of disagreement": high disagreement means the
+    plausible weak probes cannot agree on the label (boundary / unreliable weak
+    label), low disagreement means they concur (reliable weak label). strong_train
+    is out-of-sample for every member, so the estimate is honest by construction.
+    """
+    n = weak_train_activations.shape[0]
+    members = max(2, members)
+    rng = np.random.default_rng(seed)
+    labels_t = torch.as_tensor(np.asarray(weak_train_labels), dtype=torch.float32)
+    member_probs = []
+    for _ in range(members):
+        boot = rng.integers(0, n, size=n)
+        boot_t = torch.as_tensor(boot, dtype=torch.long)
+        probe = fit_probe(
+            weak_train_activations[boot_t],
+            labels_t[boot_t],
+            l2_penalty,
+            max_iter,
+            device,
+        )
+        member_probs.append(predict_probe(probe, strong_train_activations, device))
+    stacked = np.stack(member_probs, axis=0)
+    mean_prob = stacked.mean(axis=0)
+    disagreement = stacked.std(axis=0)
+    return mean_prob, disagreement
 
 
 def compute_weak_train_knn_stats(
@@ -911,12 +1169,16 @@ def main() -> None:
     np.random.seed(args.seed)
 
     splits = load_paper_style_splits(args)
+    texts = split_texts(splits)
+    if args.diagnostics_only:
+        run_knn_saturation_diagnostics(args, splits, texts, device, output_dir)
+        return
+
     lora_examples = {
         "weak_train": to_lora_examples(splits.weak_train, args.answer_suffix),
         "strong_train": to_lora_examples(splits.strong_train, args.answer_suffix),
         "test": to_lora_examples(splits.test, args.answer_suffix),
     }
-    texts = split_texts(splits)
 
     weak_acts = extract_all_activations(
         args.weak_model,
@@ -962,6 +1224,17 @@ def main() -> None:
     weak_preds_strong = (weak_probs_strong >= 0.5).astype(int)
     weak_preds_test = (weak_probs_test >= 0.5).astype(int)
 
+    committee_mean_strong, committee_disagreement_strong = committee_disagreement_on_strong_train(
+        weak_acts["weak_train"],
+        weak_train_labels,
+        weak_acts["strong_train"],
+        args.committee_members,
+        args.l2_penalty,
+        args.max_iter,
+        device,
+        args.seed + 9000,
+    )
+
     strong_train_labels = split_labels(splits.strong_train)
     test_labels = split_labels(splits.test)
     weak_eval_rows = eval_rows_from_probs(lora_examples["test"], weak_probs_test)
@@ -991,63 +1264,6 @@ def main() -> None:
         weak_correct_weak_train,
         args.knn_k,
     )
-    if args.diagnostics_only:
-        insample_ref_correct = (weak_preds_weak_train == weak_train_labels).astype(int)
-        cross_fit_probs = cross_fitted_weak_probs(
-            weak_acts["weak_train"],
-            weak_train_labels,
-            args.cross_fit_folds,
-            args.l2_penalty,
-            args.max_iter,
-            device,
-            args.seed,
-        )
-        crossfit_ref_correct = ((cross_fit_probs >= 0.5).astype(int) == weak_train_labels).astype(int)
-
-        def _knn_saturation(reference_correct):
-            stats = compute_weak_train_knn_stats(
-                strong_acts["weak_train"],
-                strong_acts["strong_train"],
-                reference_correct,
-                args.knn_k,
-            )
-            all_correct = float(np.mean(stats["knn_correct_rate"] >= 1.0 - 1e-9))
-            return float(np.mean(reference_correct)), all_correct
-
-        in_ref_acc, in_sat = _knn_saturation(insample_ref_correct)
-        cf_ref_acc, cf_sat = _knn_saturation(crossfit_ref_correct)
-        diagnostics = {
-            "dataset": args.dataset,
-            "knn_k": args.knn_k,
-            "cross_fit_folds": args.cross_fit_folds,
-            "sizes": {
-                "weak_train": len(splits.weak_train),
-                "strong_train": len(splits.strong_train),
-                "test": len(splits.test),
-            },
-            "weak_train_reference_accuracy": {
-                "in_sample": in_ref_acc,
-                "cross_fitted": cf_ref_acc,
-            },
-            "knn_all_neighbors_weak_correct_fraction": {
-                "in_sample": in_sat,
-                "cross_fitted": cf_sat,
-            },
-        }
-        output_dir.mkdir(parents=True, exist_ok=True)
-        (output_dir / "knn_saturation_diagnostic.json").write_text(
-            json.dumps(diagnostics, indent=2), encoding="utf-8"
-        )
-        print(
-            f"[diagnostics-only] {args.dataset}: "
-            f"reference acc in-sample={in_ref_acc:.3f} -> cross-fit={cf_ref_acc:.3f}; "
-            f"kNN all-{args.knn_k}-correct fraction "
-            f"in-sample={in_sat:.3f} -> cross-fit={cf_sat:.3f}"
-        )
-        print(f"  wrote {output_dir / 'knn_saturation_diagnostic.json'}")
-        del strong_acts
-        clear_memory()
-        return
     del strong_acts
     clear_memory()
 
@@ -1100,6 +1316,26 @@ def main() -> None:
         weak_preds_strong,
         args.seed + 5000,
     )
+    committee_agree_indices, committee_agree_filter = score_band_indices(
+        committee_disagreement_strong,
+        args.committee_keep_frac,
+        "low",
+    )
+    committee_agree_balanced_indices = hard_weak_label_balance(
+        committee_agree_indices,
+        weak_preds_strong,
+        args.seed + 7000,
+    )
+    committee_disagree_indices, committee_disagree_filter = score_band_indices(
+        committee_disagreement_strong,
+        args.committee_keep_frac,
+        "high",
+    )
+    committee_disagree_balanced_indices = hard_weak_label_balance(
+        committee_disagree_indices,
+        weak_preds_strong,
+        args.seed + 8000,
+    )
     random_control_size = args.random_control_size or len(middle_balanced_indices)
 
     strong_examples = lora_examples["strong_train"]
@@ -1147,6 +1383,22 @@ def main() -> None:
         "knn_mixed_balanced": (
             [strong_examples[int(i)] for i in knn_mixed_balanced_indices],
             [weak_labels[int(i)] for i in knn_mixed_balanced_indices],
+        ),
+        "committee_agree_unbalanced": (
+            [strong_examples[int(i)] for i in committee_agree_indices],
+            [weak_labels[int(i)] for i in committee_agree_indices],
+        ),
+        "committee_agree_balanced": (
+            [strong_examples[int(i)] for i in committee_agree_balanced_indices],
+            [weak_labels[int(i)] for i in committee_agree_balanced_indices],
+        ),
+        "committee_disagree_unbalanced": (
+            [strong_examples[int(i)] for i in committee_disagree_indices],
+            [weak_labels[int(i)] for i in committee_disagree_indices],
+        ),
+        "committee_disagree_balanced": (
+            [strong_examples[int(i)] for i in committee_disagree_balanced_indices],
+            [weak_labels[int(i)] for i in committee_disagree_balanced_indices],
         ),
     }
     random_run_names: list[str] = []
@@ -1285,6 +1537,18 @@ def main() -> None:
         weak_probs_strong,
         residuals,
     )
+    subset_summaries["committee_agree_diagnostics"] = subset_summary(
+        committee_agree_balanced_indices,
+        strong_train_labels,
+        weak_probs_strong,
+        residuals,
+    )
+    subset_summaries["committee_disagree_diagnostics"] = subset_summary(
+        committee_disagree_balanced_indices,
+        strong_train_labels,
+        weak_probs_strong,
+        residuals,
+    )
 
     fmt = format_summary(args)
     summary = {
@@ -1364,6 +1628,16 @@ def main() -> None:
             "knn_correct_rate_median": float(np.median(knn_stats["knn_correct_rate"])),
             "knn_correct_rate_min": float(np.min(knn_stats["knn_correct_rate"])),
             "knn_correct_rate_max": float(np.max(knn_stats["knn_correct_rate"])),
+        },
+        "committee_filter": {
+            "members": args.committee_members,
+            "score": "std of bootstrap committee weak-probe probabilities on strong_train",
+            "reference_split": "weak_train (bootstrap resamples)",
+            "query_split": "strong_train",
+            "agree": committee_agree_filter,
+            "disagree": committee_disagree_filter,
+            "disagreement_mean": float(np.mean(committee_disagreement_strong)),
+            "disagreement_median": float(np.median(committee_disagreement_strong)),
         },
         "runs": run_reports,
         "random_unbalanced_controls_summary": random_unbalanced_summary,
