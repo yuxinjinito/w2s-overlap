@@ -7,6 +7,20 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# Activate the Python environment so `python3` has the ML stack (torch/transformers/peft).
+# Lab-specific activation is kept out of the public repo: set W2S_ENV_ACTIVATE to your
+# activate snippet/path, or drop a (gitignored) _private/env.sh, or keep a repo-local .venv.
+# (set +u around the source: conda's activate scripts trip `set -u`.)
+set +u
+if [[ -n "${W2S_ENV_ACTIVATE:-}" ]]; then
+  source "${W2S_ENV_ACTIVATE}"
+elif [[ -f "${ROOT_DIR}/_private/env.sh" ]]; then
+  source "${ROOT_DIR}/_private/env.sh"
+elif [[ -f "${ROOT_DIR}/.venv/bin/activate" ]]; then
+  source "${ROOT_DIR}/.venv/bin/activate"
+fi
+set -u
+
 RUN_LOCK_FILE="${RUN_LOCK_FILE:-results/.locks/paper_style_lora.lock}"
 DISABLE_RUN_LOCK="${DISABLE_RUN_LOCK:-0}"
 if [[ "$DISABLE_RUN_LOCK" != "1" ]]; then
