@@ -27,7 +27,7 @@ export KNN_REFERENCE_CROSS_FIT="${KNN_REFERENCE_CROSS_FIT:-1}"
 export CROSS_FIT_FOLDS="${CROSS_FIT_FOLDS:-5}"
 export COMMITTEE_MEMBERS="${COMMITTEE_MEMBERS:-8}"
 
-export FILTER_RUNS="${FILTER_RUNS:-knn_mixed_balanced,knn_high_balanced,committee_agree_balanced,committee_disagree_balanced,random_unbalanced,random_balanced,weak_label}"
+export FILTER_RUNS="${FILTER_RUNS:-knn_mixed_balanced,knn_high_balanced,confidence_high_balanced,committee_agree_balanced,committee_disagree_balanced,random_unbalanced,random_balanced,weak_label}"
 
 echo "=== Keep-easy 50% comparison (${DATASET}, cross-fit) ==="
 echo "OUTPUT_ROOT=${OUTPUT_ROOT}"

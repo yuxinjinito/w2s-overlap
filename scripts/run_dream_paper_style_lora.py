@@ -227,6 +227,7 @@ def requested_runs(args: argparse.Namespace) -> list[str]:
             "committee_agree_unbalanced_f",
             "committee_disagree_balanced_f",
             "knn_high_balanced_f",
+            "confidence_high_balanced_f",
             "random_balanced_f",
         ):
             if name.startswith(pref) and name[len(pref):].isdigit():
@@ -702,6 +703,26 @@ def auroc_from_rows(rows: list[dict]) -> float:
     return float((ranks[labels == 1].sum() - n_pos * (n_pos + 1) / 2.0) / (n_pos * n_neg))
 
 
+def prior_matched_accuracy(rows: list[dict]) -> float:
+    """Accuracy at the balanced operating point: predict the highest-scored points as
+    positive, matching the number of true positives (the test set is class-balanced by
+    construction, so this uses only the known prior, not per-example labels). Removes the
+    0.5-threshold brittleness when the model ranks well but its probabilities are bunched
+    near 0.5 / miscalibrated -- equivalent to a val-tuned threshold for a balanced test.
+    """
+    if not rows:
+        return float("nan")
+    probs = np.array([r["prob_label1"] for r in rows], dtype=float)
+    labels = np.array([int(r["label"]) for r in rows], dtype=int)
+    n_pos = int(labels.sum())
+    if n_pos == 0 or n_pos == len(labels):
+        return float("nan")
+    order = np.argsort(-probs, kind="mergesort")
+    preds = np.zeros(len(labels), dtype=int)
+    preds[order[:n_pos]] = 1
+    return float((preds == labels).mean())
+
+
 def metric_from_rows(rows: list[dict]) -> dict[str, float]:
     confidence = [2.0 * abs(float(row["prob_label1"]) - 0.5) for row in rows]
     return {
@@ -1091,6 +1112,7 @@ def run_lora_eval(
         f"eval {run_name}",
     )
     eval_summary["auroc"] = auroc_from_rows(rows)
+    eval_summary["accuracy_prior_matched"] = prior_matched_accuracy(rows)
     del model
     del tokenizer
     clear_memory()
@@ -1513,6 +1535,12 @@ def main() -> None:
             [strong_examples[int(i)] for i in knn_high_bal],
             [weak_labels[int(i)] for i in knn_high_bal],
         )
+        conf_high_idx, _ = score_band_indices(weak_confidences_strong, frac, "high")
+        conf_high_bal = hard_weak_label_balance(conf_high_idx, weak_preds_strong, args.seed + 14000 + fi)
+        run_subsets[f"confidence_high_balanced_f{pct}"] = (
+            [strong_examples[int(i)] for i in conf_high_bal],
+            [weak_labels[int(i)] for i in conf_high_bal],
+        )
     random_run_names: list[str] = []
     random_unbalanced_run_names: list[str] = []
     if "random_unbalanced" in runs:
@@ -1561,6 +1589,7 @@ def main() -> None:
             "eval base strong",
         )
         base_summary["auroc"] = auroc_from_rows(base_rows)
+        base_summary["accuracy_prior_matched"] = prior_matched_accuracy(base_rows)
         prediction_columns["base"] = base_rows
         run_reports["base"] = {"eval": base_summary}
         del model

@@ -35,7 +35,7 @@ export COMMITTEE_KEEP_FRACS="${COMMITTEE_KEEP_FRACS:-0.1,0.2,0.3,0.45,0.6,0.8}"
 
 # 17 runs/seed: 6-point agree curve + 6-point matched random + 2 boundary anchors
 # + 2 agree-unbalanced checks + full weak-label anchor.
-export FILTER_RUNS="${FILTER_RUNS:-committee_agree_balanced_f10,committee_agree_balanced_f20,committee_agree_balanced_f30,committee_agree_balanced_f45,committee_agree_balanced_f60,committee_agree_balanced_f80,knn_high_balanced_f10,knn_high_balanced_f20,knn_high_balanced_f30,knn_high_balanced_f45,knn_high_balanced_f60,knn_high_balanced_f80,random_balanced_f10,random_balanced_f20,random_balanced_f30,random_balanced_f45,random_balanced_f60,random_balanced_f80,committee_disagree_balanced_f20,committee_disagree_balanced_f45,weak_label}"
+export FILTER_RUNS="${FILTER_RUNS:-committee_agree_balanced_f10,committee_agree_balanced_f20,committee_agree_balanced_f30,committee_agree_balanced_f45,committee_agree_balanced_f60,committee_agree_balanced_f80,knn_high_balanced_f10,knn_high_balanced_f20,knn_high_balanced_f30,knn_high_balanced_f45,knn_high_balanced_f60,knn_high_balanced_f80,confidence_high_balanced_f10,confidence_high_balanced_f20,confidence_high_balanced_f30,confidence_high_balanced_f45,confidence_high_balanced_f60,confidence_high_balanced_f80,random_balanced_f10,random_balanced_f20,random_balanced_f30,random_balanced_f45,random_balanced_f60,random_balanced_f80,committee_disagree_balanced_f20,committee_disagree_balanced_f45,weak_label}"
 
 echo "=== Committee keep-fraction sweep (${DATASET}, cross-fit) ==="
 echo "OUTPUT_ROOT=${OUTPUT_ROOT}"
