@@ -672,6 +672,36 @@ def eval_rows_from_probs(examples: list[LoraExample], probs: np.ndarray) -> list
     return rows
 
 
+def auroc_from_rows(rows: list[dict]) -> float:
+    """Threshold-free AUROC of prob_label1 vs the true label (rank-based, tie-averaged).
+
+    More stable than thresholded accuracy when the model sits near the 0.5 boundary:
+    it measures whether truly-positive examples are scored above truly-negative ones,
+    regardless of where the decision threshold falls.
+    """
+    if not rows:
+        return float("nan")
+    scores = np.array([r["prob_label1"] for r in rows], dtype=float)
+    labels = np.array([int(r["label"]) for r in rows], dtype=int)
+    n_pos = int((labels == 1).sum())
+    n_neg = int((labels == 0).sum())
+    if n_pos == 0 or n_neg == 0:
+        return float("nan")
+    order = np.argsort(scores, kind="mergesort")
+    s_sorted = scores[order]
+    ranks_sorted = np.arange(1, len(scores) + 1, dtype=float)
+    i = 0
+    while i < len(scores):
+        j = i
+        while j + 1 < len(scores) and s_sorted[j + 1] == s_sorted[i]:
+            j += 1
+        ranks_sorted[i : j + 1] = (i + 1 + j + 1) / 2.0
+        i = j + 1
+    ranks = np.empty(len(scores), dtype=float)
+    ranks[order] = ranks_sorted
+    return float((ranks[labels == 1].sum() - n_pos * (n_pos + 1) / 2.0) / (n_pos * n_neg))
+
+
 def metric_from_rows(rows: list[dict]) -> dict[str, float]:
     confidence = [2.0 * abs(float(row["prob_label1"]) - 0.5) for row in rows]
     return {
@@ -1060,6 +1090,7 @@ def run_lora_eval(
         args.max_length,
         f"eval {run_name}",
     )
+    eval_summary["auroc"] = auroc_from_rows(rows)
     del model
     del tokenizer
     clear_memory()
@@ -1529,6 +1560,7 @@ def main() -> None:
             args.max_length,
             "eval base strong",
         )
+        base_summary["auroc"] = auroc_from_rows(base_rows)
         prediction_columns["base"] = base_rows
         run_reports["base"] = {"eval": base_summary}
         del model
