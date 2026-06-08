@@ -63,6 +63,7 @@ SCIQ_USE_SUPPORT="${SCIQ_USE_SUPPORT:-0}"
 ANLI_ROUND="${ANLI_ROUND:-r2}"
 COMMITTEE_MEMBERS="${COMMITTEE_MEMBERS:-8}"
 COMMITTEE_KEEP_FRAC="${COMMITTEE_KEEP_FRAC:-0.5}"
+COMMITTEE_KEEP_FRACS="${COMMITTEE_KEEP_FRACS:-}"
 
 WEAK_BATCH_SIZE="${WEAK_BATCH_SIZE:-4}"
 ACTIVATION_BATCH_SIZE="${ACTIVATION_BATCH_SIZE:-1}"
@@ -132,6 +133,9 @@ if [[ "$DATASET" == "anli" ]]; then
   EXTRA_ARGS+=(--anli-round "$ANLI_ROUND")
 fi
 EXTRA_ARGS+=(--committee-members "$COMMITTEE_MEMBERS" --committee-keep-frac "$COMMITTEE_KEEP_FRAC")
+if [[ -n "$COMMITTEE_KEEP_FRACS" ]]; then
+  EXTRA_ARGS+=(--committee-keep-fracs "$COMMITTEE_KEEP_FRACS")
+fi
 if [[ "$KNN_REFERENCE_CROSS_FIT" == "1" ]]; then
   EXTRA_ARGS+=(--knn-reference-cross-fit --cross-fit-folds "$CROSS_FIT_FOLDS")
 fi

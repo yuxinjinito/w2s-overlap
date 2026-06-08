@@ -164,6 +164,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--committee-keep-frac", type=float, default=0.5)
     parser.add_argument(
+        "--committee-keep-fracs",
+        default="",
+        help=(
+            "Comma-separated keep fractions for a committee selection sweep, e.g. "
+            "'0.1,0.2,0.3,0.45,0.6,0.8'. For each fraction f (pct=round(100f)) it adds runs "
+            "committee_agree_balanced_f{pct}, committee_agree_unbalanced_f{pct}, "
+            "committee_disagree_balanced_f{pct}, and a matched random_balanced_f{pct}. "
+            "Empty = no sweep."
+        ),
+    )
+    parser.add_argument(
         "--diagnostics-only",
         action="store_true",
         help=(
@@ -208,7 +219,18 @@ def requested_runs(args: argparse.Namespace) -> list[str]:
         "random_unbalanced",
         "random_balanced",
     }
-    unknown = sorted(set(runs) - allowed)
+    def _is_frac_run(name: str) -> bool:
+        for pref in (
+            "committee_agree_balanced_f",
+            "committee_agree_unbalanced_f",
+            "committee_disagree_balanced_f",
+            "random_balanced_f",
+        ):
+            if name.startswith(pref) and name[len(pref):].isdigit():
+                return True
+        return False
+
+    unknown = sorted(r for r in set(runs) - allowed if not _is_frac_run(r))
     if unknown:
         raise SystemExit(f"Unknown run(s): {', '.join(unknown)}")
     return runs
@@ -1401,6 +1423,38 @@ def main() -> None:
             [weak_labels[int(i)] for i in committee_disagree_balanced_indices],
         ),
     }
+    # Optional committee selection sweep over keep fractions (label-complexity /
+    # data-efficiency curve): for each f, keep the most-reliable (low-disagreement)
+    # or most-boundary (high-disagreement) f-fraction, plus a matched random_balanced.
+    committee_keep_fracs = [
+        float(x) for x in (args.committee_keep_fracs or "").split(",") if x.strip()
+    ]
+    n_strong_examples = len(strong_examples)
+    for fi, frac in enumerate(committee_keep_fracs):
+        pct = int(round(frac * 100))
+        agree_idx, _ = score_band_indices(committee_disagreement_strong, frac, "low")
+        disagree_idx, _ = score_band_indices(committee_disagreement_strong, frac, "high")
+        agree_bal = hard_weak_label_balance(agree_idx, weak_preds_strong, args.seed + 10000 + fi)
+        disagree_bal = hard_weak_label_balance(disagree_idx, weak_preds_strong, args.seed + 11000 + fi)
+        rand_bal = random_balanced_indices(
+            weak_preds_strong, int(round(frac * n_strong_examples)), args.seed + 12000 + fi
+        )
+        run_subsets[f"committee_agree_balanced_f{pct}"] = (
+            [strong_examples[int(i)] for i in agree_bal],
+            [weak_labels[int(i)] for i in agree_bal],
+        )
+        run_subsets[f"committee_agree_unbalanced_f{pct}"] = (
+            [strong_examples[int(i)] for i in agree_idx],
+            [weak_labels[int(i)] for i in agree_idx],
+        )
+        run_subsets[f"committee_disagree_balanced_f{pct}"] = (
+            [strong_examples[int(i)] for i in disagree_bal],
+            [weak_labels[int(i)] for i in disagree_bal],
+        )
+        run_subsets[f"random_balanced_f{pct}"] = (
+            [strong_examples[int(i)] for i in rand_bal],
+            [weak_labels[int(i)] for i in rand_bal],
+        )
     random_run_names: list[str] = []
     random_unbalanced_run_names: list[str] = []
     if "random_unbalanced" in runs:
