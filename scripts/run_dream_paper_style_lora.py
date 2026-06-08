@@ -212,6 +212,8 @@ def requested_runs(args: argparse.Namespace) -> list[str]:
         "knn_middle_balanced",
         "knn_mixed_unbalanced",
         "knn_mixed_balanced",
+        "knn_high_unbalanced",
+        "knn_high_balanced",
         "committee_agree_unbalanced",
         "committee_agree_balanced",
         "committee_disagree_unbalanced",
@@ -224,6 +226,7 @@ def requested_runs(args: argparse.Namespace) -> list[str]:
             "committee_agree_balanced_f",
             "committee_agree_unbalanced_f",
             "committee_disagree_balanced_f",
+            "knn_high_balanced_f",
             "random_balanced_f",
         ):
             if name.startswith(pref) and name[len(pref):].isdigit():
@@ -1338,6 +1341,16 @@ def main() -> None:
         weak_preds_strong,
         args.seed + 5000,
     )
+    knn_high_indices, knn_high_filter = score_band_indices(
+        knn_stats["knn_correct_rate"],
+        args.knn_keep_middle_frac,
+        "high",
+    )
+    knn_high_balanced_indices = hard_weak_label_balance(
+        knn_high_indices,
+        weak_preds_strong,
+        args.seed + 5500,
+    )
     committee_agree_indices, committee_agree_filter = score_band_indices(
         committee_disagreement_strong,
         args.committee_keep_frac,
@@ -1406,6 +1419,14 @@ def main() -> None:
             [strong_examples[int(i)] for i in knn_mixed_balanced_indices],
             [weak_labels[int(i)] for i in knn_mixed_balanced_indices],
         ),
+        "knn_high_unbalanced": (
+            [strong_examples[int(i)] for i in knn_high_indices],
+            [weak_labels[int(i)] for i in knn_high_indices],
+        ),
+        "knn_high_balanced": (
+            [strong_examples[int(i)] for i in knn_high_balanced_indices],
+            [weak_labels[int(i)] for i in knn_high_balanced_indices],
+        ),
         "committee_agree_unbalanced": (
             [strong_examples[int(i)] for i in committee_agree_indices],
             [weak_labels[int(i)] for i in committee_agree_indices],
@@ -1454,6 +1475,12 @@ def main() -> None:
         run_subsets[f"random_balanced_f{pct}"] = (
             [strong_examples[int(i)] for i in rand_bal],
             [weak_labels[int(i)] for i in rand_bal],
+        )
+        knn_high_idx, _ = score_band_indices(knn_stats["knn_correct_rate"], frac, "high")
+        knn_high_bal = hard_weak_label_balance(knn_high_idx, weak_preds_strong, args.seed + 13000 + fi)
+        run_subsets[f"knn_high_balanced_f{pct}"] = (
+            [strong_examples[int(i)] for i in knn_high_bal],
+            [weak_labels[int(i)] for i in knn_high_bal],
         )
     random_run_names: list[str] = []
     random_unbalanced_run_names: list[str] = []

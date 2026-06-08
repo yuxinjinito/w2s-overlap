@@ -5,8 +5,9 @@ set -euo pipefail
 #
 # Produces a label-complexity / data-efficiency curve: accuracy vs the fraction of
 # strong_train kept, for
-#   - committee_agree    (keep the most RELIABLE = lowest-disagreement points)
-#   - committee_disagree (keep the most BOUNDARY = highest-disagreement points)
+#   - committee_agree    (keep the most RELIABLE = lowest committee disagreement)
+#   - knn_high           (keep the EASY points = neighbors mostly weak-correct; John's ask)
+#   - committee_disagree (keep the most BOUNDARY = highest committee disagreement)
 #   - random_balanced    (matched control at each fraction)
 # All share one activation/cross-fit/committee pass per seed (cheap to add fracs).
 #
@@ -34,7 +35,7 @@ export COMMITTEE_KEEP_FRACS="${COMMITTEE_KEEP_FRACS:-0.1,0.2,0.3,0.45,0.6,0.8}"
 
 # 17 runs/seed: 6-point agree curve + 6-point matched random + 2 boundary anchors
 # + 2 agree-unbalanced checks + full weak-label anchor.
-export FILTER_RUNS="${FILTER_RUNS:-committee_agree_balanced_f10,committee_agree_balanced_f20,committee_agree_balanced_f30,committee_agree_balanced_f45,committee_agree_balanced_f60,committee_agree_balanced_f80,random_balanced_f10,random_balanced_f20,random_balanced_f30,random_balanced_f45,random_balanced_f60,random_balanced_f80,committee_disagree_balanced_f20,committee_disagree_balanced_f45,committee_agree_unbalanced_f30,committee_agree_unbalanced_f45,weak_label}"
+export FILTER_RUNS="${FILTER_RUNS:-committee_agree_balanced_f10,committee_agree_balanced_f20,committee_agree_balanced_f30,committee_agree_balanced_f45,committee_agree_balanced_f60,committee_agree_balanced_f80,knn_high_balanced_f10,knn_high_balanced_f20,knn_high_balanced_f30,knn_high_balanced_f45,knn_high_balanced_f60,knn_high_balanced_f80,random_balanced_f10,random_balanced_f20,random_balanced_f30,random_balanced_f45,random_balanced_f60,random_balanced_f80,committee_disagree_balanced_f20,committee_disagree_balanced_f45,weak_label}"
 
 echo "=== Committee keep-fraction sweep (${DATASET}, cross-fit) ==="
 echo "OUTPUT_ROOT=${OUTPUT_ROOT}"
