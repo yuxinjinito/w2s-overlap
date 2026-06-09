@@ -303,7 +303,7 @@ def format_sciq_paper_style(ex: dict, row_id: int, rng: random.Random, use_suppo
 
 
 def load_and_process_sciq_split(split: str, n_docs: int, seed: int, use_support: bool) -> Dataset:
-    raw = load_dataset("sciq", split=split).shuffle(seed=seed)
+    raw = load_dataset("allenai/sciq", split=split).shuffle(seed=seed)
     if len(raw) < n_docs:
         print(f"sciq/{split} has < {n_docs} raw docs, using all {len(raw)}")
     raw = raw.select(range(min(n_docs, len(raw))))
@@ -348,7 +348,7 @@ def load_sciq_multichoice_eval(n_questions: int, seed: int, use_support: bool) -
     sharing source_id, label=1 on the correct one, same prompt format as training
     (no support by default). argmax of P(correct) over a question's 4 candidates gives
     a true 4-way multiple-choice prediction (scored by accuracy_3class's argmax)."""
-    raw = load_dataset("sciq", split="test").shuffle(seed=seed)
+    raw = load_dataset("allenai/sciq", split="test").shuffle(seed=seed)
     out: list[dict] = []
     n = 0
     for ex in raw:
