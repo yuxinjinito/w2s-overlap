@@ -216,6 +216,40 @@ def load_paper_dream_splits(n_train: int, n_val: int, n_test: int, seed: int) ->
     )
 
 
+def load_dream_3class_eval(n_questions: int, seed: int) -> list[dict[str, Any]]:
+    """Build a per-question multi-candidate eval set from the Dream test split.
+
+    For each test question, emit ALL candidate answers (one row per choice),
+    sharing the question's source_id, with labels=1 on the correct choice. The
+    prompt format matches format_dream_paper_style exactly, so a model trained on
+    the binary 'is this candidate correct?' task can score each candidate; argmax
+    of P(correct) over a question's candidates gives a true multi-class prediction.
+    """
+    raw_rows = list(iter_dream_question_rows(load_dream_raw("test")))
+    ds = Dataset.from_list(raw_rows).shuffle(seed=seed)
+    out: list[dict[str, Any]] = []
+    n = 0
+    for ex in ds:
+        if n >= n_questions:
+            break
+        choices = list(ex["choice"])
+        if ex["answer"] not in choices or len(choices) < 2:
+            continue
+        joined = "\n".join(ex["dialogue"]) if isinstance(ex["dialogue"], list) else flatten_text(ex["dialogue"])
+        for choice in choices:
+            txt = f"{joined}\n\nQ: {ex['question']} A: {choice}"
+            out.append(
+                {
+                    "id": hashlib.sha1(txt.encode()).hexdigest()[:8],
+                    "source_id": str(ex["source_id"]),
+                    "txt": txt,
+                    "labels": int(choice == ex["answer"]),
+                }
+            )
+        n += 1
+    return out
+
+
 def batched_indices(n_items: int, batch_size: int):
     for start in range(0, n_items, batch_size):
         yield start, min(start + batch_size, n_items)

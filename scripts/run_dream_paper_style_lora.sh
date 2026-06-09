@@ -120,6 +120,9 @@ fi
 if [[ "$NO_PLOTS" == "1" ]]; then
   EXTRA_ARGS+=(--no-plots)
 fi
+if [[ "${EVAL_3CLASS:-0}" == "1" ]]; then
+  EXTRA_ARGS+=(--eval-3class --n-eval-questions "${N_EVAL_QUESTIONS:-2000}")
+fi
 if [[ "$SAVE_ACTIVATIONS" == "1" ]]; then
   EXTRA_ARGS+=(--save-activations)
 fi

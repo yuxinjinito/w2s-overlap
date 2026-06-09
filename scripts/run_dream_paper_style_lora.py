@@ -36,6 +36,7 @@ from run_dream_paper_linear_probe import (
     balance_binary_dataset,
     extract_final_token_activations,
     fit_probe,
+    load_dream_3class_eval,
     load_paper_dream_splits,
     predict_probe,
     resolve_device,
@@ -193,6 +194,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top-k", type=int, default=20)
     parser.add_argument("--no-plots", action="store_true")
     parser.add_argument("--save-activations", action="store_true")
+    parser.add_argument(
+        "--eval-3class",
+        action="store_true",
+        help="(Dream) also report per-question multi-class accuracy: score every candidate "
+        "answer of each test question and argmax P(correct).",
+    )
+    parser.add_argument(
+        "--n-eval-questions",
+        type=int,
+        default=2000,
+        help="Number of Dream test questions for --eval-3class (each expands to its candidate answers).",
+    )
     return parser.parse_args()
 
 
@@ -726,6 +739,26 @@ def prior_matched_accuracy(rows: list[dict]) -> float:
     return float((preds == labels).mean())
 
 
+def accuracy_3class(examples: list[LoraExample], rows: list[dict]) -> float:
+    """Per-question multi-class accuracy. Group candidate rows by source_id (rows must be
+    aligned with examples in order), pick the candidate with the highest P(correct)
+    (prob_label1), and count the question correct iff that candidate is the true answer
+    (label == 1). This converts the binary 'is this candidate correct?' model into a true
+    multiple-choice prediction (argmax over a question's candidates)."""
+    from collections import defaultdict
+
+    groups: dict[str, list[tuple[float, int]]] = defaultdict(list)
+    for ex, row in zip(examples, rows):
+        groups[ex.source_id].append((float(row["prob_label1"]), int(ex.label)))
+    if not groups:
+        return float("nan")
+    correct = 0
+    for cands in groups.values():
+        best = max(range(len(cands)), key=lambda i: cands[i][0])
+        correct += int(cands[best][1] == 1)
+    return correct / len(groups)
+
+
 def metric_from_rows(rows: list[dict]) -> dict[str, float]:
     confidence = [2.0 * abs(float(row["prob_label1"]) - 0.5) for row in rows]
     return {
@@ -1097,6 +1130,7 @@ def run_lora_eval(
     train_labels: list[int],
     eval_examples: list[LoraExample],
     output_dir: Path,
+    eval3_examples: list[LoraExample] | None = None,
 ) -> tuple[dict, list[dict]]:
     if args.train_seed is not None:
         torch.manual_seed(args.train_seed)
@@ -1116,6 +1150,17 @@ def run_lora_eval(
     )
     eval_summary["auroc"] = auroc_from_rows(rows)
     eval_summary["accuracy_prior_matched"] = prior_matched_accuracy(rows)
+    if eval3_examples:
+        _, rows3 = evaluate_yes_no(
+            model,
+            tokenizer,
+            eval3_examples,
+            args.strong_batch_size,
+            args.device,
+            args.max_length,
+            f"eval3 {run_name}",
+        )
+        eval_summary["accuracy_3class"] = accuracy_3class(eval3_examples, rows3)
     del model
     del tokenizer
     clear_memory()
@@ -1431,6 +1476,22 @@ def main() -> None:
 
     strong_examples = lora_examples["strong_train"]
     eval_examples = lora_examples["test"]
+    eval3_examples = None
+    if args.eval_3class and args.dataset == "dream":
+        eval3_examples = [
+            LoraExample(
+                id=r["id"],
+                source_id=r["source_id"],
+                text=r["txt"],
+                label=int(r["labels"]),
+                answer_suffix=args.answer_suffix,
+            )
+            for r in load_dream_3class_eval(args.n_eval_questions, args.seed)
+        ]
+        print(
+            f"[3class] built {len(eval3_examples)} candidate rows over up to "
+            f"{args.n_eval_questions} questions"
+        )
     weak_labels = weak_preds_strong.tolist()
     run_subsets: dict[str, tuple[list[LoraExample], list[int]]] = {
         "ground_truth": (strong_examples, strong_train_labels.tolist()),
@@ -1613,6 +1674,17 @@ def main() -> None:
         )
         base_summary["auroc"] = auroc_from_rows(base_rows)
         base_summary["accuracy_prior_matched"] = prior_matched_accuracy(base_rows)
+        if eval3_examples:
+            _, base_rows3 = evaluate_yes_no(
+                model,
+                tokenizer,
+                eval3_examples,
+                args.strong_batch_size,
+                args.device,
+                args.max_length,
+                "eval3 base",
+            )
+            base_summary["accuracy_3class"] = accuracy_3class(eval3_examples, base_rows3)
         prediction_columns["base"] = base_rows
         run_reports["base"] = {"eval": base_summary}
         del model
@@ -1623,7 +1695,9 @@ def main() -> None:
         if run_name == "base":
             continue
         train_examples, train_labels = run_subsets[run_name]
-        report, rows = run_lora_eval(args, run_name, train_examples, train_labels, eval_examples, output_dir)
+        report, rows = run_lora_eval(
+            args, run_name, train_examples, train_labels, eval_examples, output_dir, eval3_examples
+        )
         prediction_columns[run_name] = rows
         run_reports[run_name] = report
 
