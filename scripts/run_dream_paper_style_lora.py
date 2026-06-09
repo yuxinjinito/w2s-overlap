@@ -1536,6 +1536,27 @@ def main() -> None:
                 f"[multichoice] built {len(eval3_examples)} candidate rows over "
                 f"{n_questions} {args.dataset} questions"
             )
+    # Weak-model multiple-choice accuracy = the LOWER BOUND for the bounds table /
+    # multichoice PGR. Score the candidate set with the (already-fitted) weak probe and
+    # argmax over each question's candidates, same as the strong-side multichoice metric.
+    weak_eval3_acc = None
+    if eval3_examples:
+        weak_eval3_acts = extract_final_token_activations(
+            args.weak_model,
+            eval3_examples,
+            device,
+            args.torch_dtype,
+            args.activation_batch_size,
+            args.activation_max_length,
+            "extract weak eval3 activations",
+        )
+        weak_eval3_acc = accuracy_3class(
+            eval3_examples,
+            [{"prob_label1": float(p)} for p in predict_probe(weak_probe, weak_eval3_acts, device)],
+        )
+        del weak_eval3_acts
+        clear_memory()
+        print(f"[multichoice] weak-probe lower bound accuracy_3class = {weak_eval3_acc:.3f}")
     weak_labels = weak_preds_strong.tolist()
     run_subsets: dict[str, tuple[list[LoraExample], list[int]]] = {
         "ground_truth": (strong_examples, strong_train_labels.tolist()),
@@ -1885,6 +1906,7 @@ def main() -> None:
             "soft_prob_label1_mean": float(np.mean(weak_probs_strong)),
             "eval_accuracy": float(np.mean(weak_preds_test == test_labels)),
             "weak_train_accuracy": float(np.mean(weak_correct_weak_train)),
+            "accuracy_3class": weak_eval3_acc,
         },
         "map": {
             "best_name": best_map.name,
