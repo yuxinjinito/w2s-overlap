@@ -23,6 +23,7 @@ import sys
 import csv
 import glob
 import os
+import re
 import statistics
 
 import numpy as np
@@ -100,21 +101,25 @@ def main(run_dir):
             if c.endswith("_prob_label1") and c != "weak_prob_label1"
         ]
         for m in methods:
+            group = re.sub(r"_\d+$", "", m)  # pool random_balanced_0/1/2 -> random_balanced
             for name, fn in METRICS.items():
-                method_vals[name].setdefault(m, []).append(fn(col(rows, f"{m}_prob_label1"), y))
+                method_vals[name].setdefault(group, []).append(fn(col(rows, f"{m}_prob_label1"), y))
 
-    print(f"PGR for {run_dir}  ({len(seed_files)} LoRA seed(s))")
+    print(f"PGR for {run_dir}  ({len(seed_files)} LoRA seed(s); +/- = std across seeds x controls)")
     for name in METRICS:
         w, g = anchors[name]["weak"], anchors[name]["gt"]
         print(f"\n=== {name}  (weak={w:.3f}, strong_GT={g:.3f}, gap={g - w:.3f}) ===")
-        print(f"{'method':32} {'value':>7} {'PGR':>7}")
+        print(f"{'method':30} {'value (mean±sd)':>17} {'PGR (mean±sd)':>20} {'n':>3}")
         out = []
         for m, vals in method_vals[name].items():
             v = statistics.mean(vals)
-            pgr = (v - w) / (g - w) if g != w else float("nan")
-            out.append((m, v, pgr))
-        for m, v, pgr in sorted(out, key=lambda r: -(r[2] if r[2] == r[2] else -9)):
-            print(f"{m:32} {v:>7.3f} {pgr:>7.3f}")
+            vsd = statistics.stdev(vals) if len(vals) > 1 else 0.0
+            pgrs = [(x - w) / (g - w) for x in vals] if g != w else [float("nan")]
+            pgr = statistics.mean(pgrs)
+            psd = statistics.stdev(pgrs) if len(pgrs) > 1 else 0.0
+            out.append((m, v, vsd, pgr, psd, len(vals)))
+        for m, v, vsd, pgr, psd, n in sorted(out, key=lambda r: -(r[3] if r[3] == r[3] else -9)):
+            print(f"{m:30} {v:>8.3f} ± {vsd:5.3f} {pgr:>+11.3f} ± {psd:5.3f} {n:>3}")
 
 
 if __name__ == "__main__":
