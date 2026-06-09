@@ -341,6 +341,39 @@ def load_paper_sciq_splits(
     )
 
 
+def load_sciq_multichoice_eval(n_questions: int, seed: int, use_support: bool) -> list[dict]:
+    """Per-question multiple-choice eval for SciQ (4 options).
+
+    For each test question, emit all 4 candidates (correct_answer + 3 distractors),
+    sharing source_id, label=1 on the correct one, same prompt format as training
+    (no support by default). argmax of P(correct) over a question's 4 candidates gives
+    a true 4-way multiple-choice prediction (scored by accuracy_3class's argmax)."""
+    raw = load_dataset("sciq", split="test").shuffle(seed=seed)
+    out: list[dict] = []
+    n = 0
+    for ex in raw:
+        if n >= n_questions:
+            break
+        if use_support:
+            support = (ex.get("support") or "").strip()
+            support_block = f"Support: {support}\n\n" if support else ""
+        else:
+            support_block = ""
+        options = [ex["correct_answer"], ex["distractor1"], ex["distractor2"], ex["distractor3"]]
+        for ci, opt in enumerate(options):
+            txt = f"{support_block}Q: {ex['question']} A: {opt}"
+            out.append(
+                {
+                    "id": f"sciq-mc-{n}-{ci}",
+                    "source_id": f"sciq-mc-{n}",
+                    "txt": txt,
+                    "labels": int(ci == 0),  # option 0 is the correct_answer
+                }
+            )
+        n += 1
+    return out
+
+
 def format_paws_paper_style(ex: dict, row_id: int) -> dict:
     txt = (
         f"Sent 1: {ex['sentence1']}\n"
@@ -1478,21 +1511,31 @@ def main() -> None:
     strong_examples = lora_examples["strong_train"]
     eval_examples = lora_examples["test"]
     eval3_examples = None
-    if args.eval_3class and args.dataset == "dream":
-        eval3_examples = [
-            LoraExample(
-                id=r["id"],
-                source_id=r["source_id"],
-                text=r["txt"],
-                label=int(r["labels"]),
-                answer_suffix=args.answer_suffix,
+    if args.eval_3class:
+        if args.dataset == "dream":
+            multichoice_rows = load_dream_3class_eval(args.n_eval_questions, args.seed)
+        elif args.dataset == "sciq":
+            multichoice_rows = load_sciq_multichoice_eval(
+                args.n_eval_questions, args.seed + 2, args.sciq_use_support
             )
-            for r in load_dream_3class_eval(args.n_eval_questions, args.seed)
-        ]
-        print(
-            f"[3class] built {len(eval3_examples)} candidate rows over up to "
-            f"{args.n_eval_questions} questions"
-        )
+        else:
+            multichoice_rows = []
+        if multichoice_rows:
+            eval3_examples = [
+                LoraExample(
+                    id=r["id"],
+                    source_id=r["source_id"],
+                    text=r["txt"],
+                    label=int(r["labels"]),
+                    answer_suffix=args.answer_suffix,
+                )
+                for r in multichoice_rows
+            ]
+            n_questions = len({r["source_id"] for r in multichoice_rows})
+            print(
+                f"[multichoice] built {len(eval3_examples)} candidate rows over "
+                f"{n_questions} {args.dataset} questions"
+            )
     weak_labels = weak_preds_strong.tolist()
     run_subsets: dict[str, tuple[list[LoraExample], list[int]]] = {
         "ground_truth": (strong_examples, strong_train_labels.tolist()),
