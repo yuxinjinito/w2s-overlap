@@ -203,8 +203,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--n-eval-questions",
         type=int,
-        default=2000,
-        help="Number of Dream test questions for --eval-3class (each expands to its candidate answers).",
+        default=2041,
+        help="Number of Dream test questions for --eval-3class (each expands to its candidate answers). "
+        "Default 2041 = the full Dream test split.",
     )
     return parser.parse_args()
 

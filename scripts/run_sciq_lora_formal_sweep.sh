@@ -101,7 +101,7 @@ KNN_KEEP_MIDDLE_FRAC="${KNN_KEEP_MIDDLE_FRAC}" \
 KNN_MIXED_CENTER="${KNN_MIXED_CENTER}" \
 SCIQ_USE_SUPPORT="${SCIQ_USE_SUPPORT}" \
 EVAL_3CLASS="${EVAL_3CLASS:-0}" \
-N_EVAL_QUESTIONS="${N_EVAL_QUESTIONS:-2000}" \
+N_EVAL_QUESTIONS="${N_EVAL_QUESTIONS:-2041}" \
 bash scripts/run_dream_paper_style_lora.sh
 
 test -f "${BASELINE_OUTPUT_DIR}/summary.json"
@@ -135,7 +135,7 @@ for TS in ${TRAIN_SEEDS}; do
   KNN_MIXED_CENTER="${KNN_MIXED_CENTER}" \
   SCIQ_USE_SUPPORT="${SCIQ_USE_SUPPORT}" \
   EVAL_3CLASS="${EVAL_3CLASS:-0}" \
-  N_EVAL_QUESTIONS="${N_EVAL_QUESTIONS:-2000}" \
+  N_EVAL_QUESTIONS="${N_EVAL_QUESTIONS:-2041}" \
   bash scripts/run_dream_paper_style_lora.sh
 
   test -f "${FILTER_OUTPUT_ROOT}/trainseed_${TS}/summary.json"
