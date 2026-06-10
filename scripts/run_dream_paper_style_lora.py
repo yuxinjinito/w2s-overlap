@@ -349,6 +349,7 @@ def load_sciq_multichoice_eval(n_questions: int, seed: int, use_support: bool) -
     (no support by default). argmax of P(correct) over a question's 4 candidates gives
     a true 4-way multiple-choice prediction (scored by accuracy_3class's argmax)."""
     raw = load_dataset("allenai/sciq", split="test").shuffle(seed=seed)
+    rng = random.Random(seed + 7)
     out: list[dict] = []
     n = 0
     for ex in raw:
@@ -360,14 +361,18 @@ def load_sciq_multichoice_eval(n_questions: int, seed: int, use_support: bool) -
         else:
             support_block = ""
         options = [ex["correct_answer"], ex["distractor1"], ex["distractor2"], ex["distractor3"]]
-        for ci, opt in enumerate(options):
-            txt = f"{support_block}Q: {ex['question']} A: {opt}"
+        # Shuffle the emission order: argmax tie-breaks pick the FIRST max, so a fixed
+        # correct-first order would systematically resolve fp16 probability ties in favor
+        # of the correct answer and inflate accuracy_3class.
+        order = rng.sample(range(4), 4)
+        for slot, oi in enumerate(order):
+            txt = f"{support_block}Q: {ex['question']} A: {options[oi]}"
             out.append(
                 {
-                    "id": f"sciq-mc-{n}-{ci}",
+                    "id": f"sciq-mc-{n}-{slot}",
                     "source_id": f"sciq-mc-{n}",
                     "txt": txt,
-                    "labels": int(ci == 0),  # option 0 is the correct_answer
+                    "labels": int(oi == 0),  # options[0] is the correct_answer
                 }
             )
         n += 1
@@ -793,6 +798,16 @@ def accuracy_3class(examples: list[LoraExample], rows: list[dict]) -> float:
     return correct / len(groups)
 
 
+def write_eval3_rows(path: Path, examples: list[LoraExample], rows: list[dict]) -> None:
+    """Persist per-candidate multichoice predictions so post-hoc analysis (tie rates,
+    per-question breakdowns, per-seed multichoice PGR) does not require a re-run."""
+    with path.open("w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["id", "source_id", "label", "prob_label1"])
+        for ex, row in zip(examples, rows):
+            writer.writerow([ex.id, ex.source_id, ex.label, f"{float(row['prob_label1']):.6f}"])
+
+
 def metric_from_rows(rows: list[dict]) -> dict[str, float]:
     confidence = [2.0 * abs(float(row["prob_label1"]) - 0.5) for row in rows]
     return {
@@ -1195,6 +1210,7 @@ def run_lora_eval(
             f"eval3 {run_name}",
         )
         eval_summary["accuracy_3class"] = accuracy_3class(eval3_examples, rows3)
+        write_eval3_rows(output_dir / f"eval3_{run_name}.csv", eval3_examples, rows3)
     del model
     del tokenizer
     clear_memory()
@@ -1550,10 +1566,11 @@ def main() -> None:
             args.activation_max_length,
             "extract weak eval3 activations",
         )
-        weak_eval3_acc = accuracy_3class(
-            eval3_examples,
-            [{"prob_label1": float(p)} for p in predict_probe(weak_probe, weak_eval3_acts, device)],
-        )
+        weak_eval3_rows = [
+            {"prob_label1": float(p)} for p in predict_probe(weak_probe, weak_eval3_acts, device)
+        ]
+        weak_eval3_acc = accuracy_3class(eval3_examples, weak_eval3_rows)
+        write_eval3_rows(output_dir / "eval3_weak.csv", eval3_examples, weak_eval3_rows)
         del weak_eval3_acts
         clear_memory()
         print(f"[multichoice] weak-probe lower bound accuracy_3class = {weak_eval3_acc:.3f}")
@@ -1750,6 +1767,7 @@ def main() -> None:
                 "eval3 base",
             )
             base_summary["accuracy_3class"] = accuracy_3class(eval3_examples, base_rows3)
+            write_eval3_rows(output_dir / "eval3_base.csv", eval3_examples, base_rows3)
         prediction_columns["base"] = base_rows
         run_reports["base"] = {"eval": base_summary}
         del model
