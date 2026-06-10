@@ -1543,7 +1543,7 @@ def main() -> None:
     if eval3_examples:
         weak_eval3_acts = extract_final_token_activations(
             args.weak_model,
-            eval3_examples,
+            [ex.text for ex in eval3_examples],
             device,
             args.torch_dtype,
             args.activation_batch_size,
