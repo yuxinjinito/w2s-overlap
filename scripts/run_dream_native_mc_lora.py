@@ -77,6 +77,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--n-train", type=int, default=800)
     p.add_argument("--n-test", type=int, default=300)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--seeds", default="", help="comma-separated TRAIN seeds for multi-seed runs (dual-eval); empty = use --seed")
     p.add_argument("--methods", default="weak_label,random_balanced,confidence_high,ground_truth")
     p.add_argument("--keep-frac", type=float, default=0.5)
     p.add_argument("--scoring", choices=["norm", "raw"], default="norm",

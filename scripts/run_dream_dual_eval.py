@@ -12,20 +12,21 @@ each trained model BOTH ways on the test questions:
 
 Goal: show whether the literal likelihood eval captures the (binary) W2S training
 signal. Expectation: discrimination scoring separates the methods (base < w2s < GT);
-likelihood scoring is ~flat at base for all binary-trained models, because the binary
-LoRA changes the yes/no head, not the option-text likelihood. If so, the discrimination
-score is the meaningful instrument and the literal likelihood eval is blind to it.
+likelihood scoring collapses below base for binary-trained models, because the binary
+LoRA reshapes the whole next-token distribution, not just a yes/no head.
 
 Methods: base (untrained) / weak_label / random_balanced / confidence_high / ground_truth.
-~25-35 min, 1 seed, on a 4090.
 
+Single seed (~25-35 min): --seed 42
+Multi-seed (data fixed at --seed, TRAIN seed varies, matches the bounds methodology):
   PYTHONPATH=scripts python scripts/run_dream_dual_eval.py \
-    --output-sub dream_dual_eval_0614 --n-train 800 --n-test 300 --max-train-steps 100 --seed 42
+    --output-sub dream_dual_eval_ms_0614 --n-train 800 --n-test 300 --max-train-steps 100 \
+    --seed 42 --seeds 42,123,456,7,31
 """
 from __future__ import annotations
 
 import json
-import time
+import random
 from pathlib import Path
 
 import numpy as np
@@ -42,6 +43,9 @@ from run_dream_native_mc_lora import (
     parse_args,
     select_subset,
 )
+
+EVAL_KEYS = ("discrimination_acc", "discrimination_auroc",
+             "likelihood_acc_norm", "likelihood_acc_raw", "likelihood_auroc")
 
 
 def _binary_ctx(q) -> str:
@@ -89,13 +93,15 @@ def main() -> None:
     args.save_adapters = False
     out = Path("results") / args.output_sub
     out.mkdir(parents=True, exist_ok=True)
+    seeds = [int(s) for s in args.seeds.split(",") if s.strip()] or [args.seed]
 
+    # Data + weak labels + base eval are computed ONCE (data seed fixed at --seed);
+    # only the TRAIN seed varies across `seeds`, matching the bounds-table methodology.
     train_qs = load_dream_native("train", args.n_train, args.seed)
     test_qs = load_dream_native("test", args.n_test, args.seed + 1)
     k = len(train_qs[0].options)
-    print(f"loaded train={len(train_qs)} test={len(test_qs)} (DREAM, K={k})")
+    print(f"loaded train={len(train_qs)} test={len(test_qs)} (DREAM, K={k}) seeds={seeds}")
 
-    # weak labels (zero-shot Qwen, per-option likelihood -- same as the native smoke)
     weak_model, weak_tok = load_causal_lm(args.weak_model, args, trainable_lora=False)
     label_weak(weak_model, weak_tok, train_qs, args.device, args.max_length, args.weak_scoring)
     weak_train_acc = float(np.mean([q.weak_pred == q.gold for q in train_qs]))
@@ -103,11 +109,9 @@ def main() -> None:
     clear_memory()
     print(f"weak train acc={weak_train_acc:.3f}")
 
-    rows = {}
-
-    def dual_eval(model, tok, tag):
+    def dual_eval(model, tok):
         disc = eval_discrimination(model, tok, test_qs, args.device, args.max_length)
-        lik, _ = evaluate_native(model, tok, test_qs, args.device, args.max_length, f"likelihood {tag}")
+        lik, _ = evaluate_native(model, tok, test_qs, args.device, args.max_length, "likelihood eval")
         return {
             "discrimination_acc": disc["accuracy"],
             "discrimination_auroc": disc["auroc"],
@@ -116,41 +120,52 @@ def main() -> None:
             "likelihood_auroc": lik["auroc"],
         }
 
-    # base (untrained) strong model, both scorings
+    # base (untrained) strong model -- no seed variance, evaluated once
     base_model, base_tok = load_causal_lm(args.strong_model, args, trainable_lora=False)
-    rows["base"] = dual_eval(base_model, base_tok, "base")
+    base_row = dual_eval(base_model, base_tok)
     del base_model
     clear_memory()
 
-    # each method: BINARY-train the strong model, then both scorings
-    for method in [m.strip() for m in args.methods.split(",") if m.strip()]:
-        if method == "base":
-            continue
-        subset = select_subset(train_qs, method, args.keep_frac, args.seed)
-        exs, labels = binary_examples(subset, use_gold=(method == "ground_truth"))
-        model, tok, rep = train_lora_model(args, exs, labels, method, out)
-        ev = dual_eval(model, tok, method)
-        ev["n_train_questions"] = len(subset)
-        ev["elapsed_sec"] = rep["elapsed_sec"]
-        rows[method] = ev
-        del model
-        clear_memory()
+    methods = [m.strip() for m in args.methods.split(",") if m.strip() and m.strip() != "base"]
+    collected = {m: {kk: [] for kk in EVAL_KEYS} for m in methods}
+    per_seed = []
+    for sd in seeds:
+        random.seed(sd)
+        np.random.seed(sd)
+        torch.manual_seed(sd)
+        for method in methods:
+            subset = select_subset(train_qs, method, args.keep_frac, sd)
+            exs, labels = binary_examples(subset, use_gold=(method == "ground_truth"))
+            model, tok, _ = train_lora_model(args, exs, labels, f"{method}_s{sd}", out)
+            ev = dual_eval(model, tok)
+            for kk in EVAL_KEYS:
+                collected[method][kk].append(ev[kk])
+            per_seed.append({"seed": sd, "method": method, **ev})
+            del model
+            clear_memory()
 
+    def agg(vals):
+        return {"mean": float(np.mean(vals)), "std": float(np.std(vals)), "n": len(vals)}
+
+    method_summary = {m: {kk: agg(v) for kk, v in collected[m].items()} for m in methods}
     summary = {
-        "dataset": "dream_dual_eval",
-        "config": {k2: v for k2, v in vars(args).items() if k2 != "device"},
+        "dataset": "dream_dual_eval_multiseed",
+        "config": {kk: vv for kk, vv in vars(args).items() if kk != "device"},
+        "seeds": seeds,
         "weak_train_accuracy": weak_train_acc,
-        "rows": rows,
+        "base": base_row,
+        "methods": method_summary,
+        "per_seed": per_seed,
     }
     (out / "summary.json").write_text(json.dumps(summary, indent=2))
 
-    print("\n=== DREAM dual eval (same models, two scorings) ===")
-    print(f"{'model':18} {'DISC acc':>9} {'DISC auroc':>11} | {'LIK acc':>8} {'LIK auroc':>10}")
-    for name, r in rows.items():
-        print(
-            f"{name:18} {r['discrimination_acc']:>9.3f} {r['discrimination_auroc']:>11.3f} | "
-            f"{r['likelihood_acc_norm']:>8.3f} {r['likelihood_auroc']:>10.3f}"
-        )
+    print(f"\n=== DREAM dual eval (mean ± std over {len(seeds)} train seeds) ===")
+    print(f"{'model':16} {'DISC acc':>14} {'LIK acc(norm)':>16}")
+    print(f"{'base':16} {base_row['discrimination_acc']:>14.3f} {base_row['likelihood_acc_norm']:>16.3f}")
+    for m in methods:
+        d = method_summary[m]["discrimination_acc"]
+        l = method_summary[m]["likelihood_acc_norm"]
+        print(f"{m:16} {d['mean']:>8.3f}±{d['std']:.3f} {l['mean']:>9.3f}±{l['std']:.3f}")
     print(f"\nweak train acc={weak_train_acc:.3f}  (DISC=accuracy_3class / LIK=John's per-option likelihood)")
     print(f"summary -> {out / 'summary.json'}")
 
