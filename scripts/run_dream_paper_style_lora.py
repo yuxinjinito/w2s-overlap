@@ -429,6 +429,42 @@ def load_paper_paws_splits(n_train: int, n_val: int, n_test: int, seed: int) -> 
 ANLI_LABELS = {0: "entailment", 1: "neutral", 2: "contradiction"}
 
 
+def load_anli_multichoice_eval(n_questions: int, seed: int, anli_round: str) -> list[dict]:
+    """Per-question multiple-choice eval for ANLI (3 relations).
+
+    For each test example, emit all 3 candidate relations (entailment / neutral /
+    contradiction), sharing source_id, label=1 on the gold relation, same prompt
+    format as training. Option order shuffled (seeded) so argmax tie-breaks are not
+    biased toward a fixed position. argmax of P(correct) over the 3 -> 3-way NLI."""
+    raw = load_dataset("facebook/anli", split=f"test_{anli_round}").shuffle(seed=seed)
+    rng = random.Random(seed + 7)
+    out: list[dict] = []
+    n = 0
+    for ex in raw:
+        if n >= n_questions:
+            break
+        gold = int(ex["label"])
+        if gold not in (0, 1, 2):
+            continue
+        order = rng.sample(range(3), 3)
+        for slot, ri in enumerate(order):
+            txt = (
+                f"Premise: {ex['premise']}\n"
+                f"Hypothesis: {ex['hypothesis']}\n"
+                f"Q: What is the relationship from the premise to the hypothesis? A: {ANLI_LABELS[ri]}"
+            )
+            out.append(
+                {
+                    "id": f"anli-mc-{n}-{slot}",
+                    "source_id": f"anli-mc-{n}",
+                    "txt": txt,
+                    "labels": int(ri == gold),
+                }
+            )
+        n += 1
+    return out
+
+
 def format_anli_paper_style(ex: dict, row_id: int, rng: random.Random) -> dict:
     """Format ANLI (3-class NLI) as binary candidate-relation correctness.
 
@@ -1533,6 +1569,10 @@ def main() -> None:
         elif args.dataset == "sciq":
             multichoice_rows = load_sciq_multichoice_eval(
                 args.n_eval_questions, args.seed + 2, args.sciq_use_support
+            )
+        elif args.dataset == "anli":
+            multichoice_rows = load_anli_multichoice_eval(
+                args.n_eval_questions, args.seed + 2, args.anli_round
             )
         else:
             multichoice_rows = []
