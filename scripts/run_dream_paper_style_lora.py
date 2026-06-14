@@ -459,7 +459,7 @@ def format_anli_paper_style(ex: dict, row_id: int, rng: random.Random) -> dict:
 
 
 def load_and_process_anli_split(split: str, n_docs: int, seed: int) -> Dataset:
-    raw = load_dataset("anli", split=split).shuffle(seed=seed)
+    raw = load_dataset("facebook/anli", split=split).shuffle(seed=seed)
     raw = raw.filter(lambda ex: int(ex["label"]) in (0, 1, 2))
     rng = random.Random(seed)
     formatted_rows = [
