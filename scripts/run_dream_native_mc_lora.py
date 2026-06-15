@@ -280,6 +280,15 @@ def train_native(model_name: str, pairs: list[tuple[str, str]], args: argparse.N
     )
     params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.weight_decay)
+    warmup_steps = int(getattr(args, "warmup_steps", 0))
+    scheduler = (
+        torch.optim.lr_scheduler.LambdaLR(
+            optimizer, lr_lambda=lambda step: min(1.0, float(step + 1) / float(warmup_steps))
+        )
+        if warmup_steps > 0
+        else None
+    )
+    max_grad_norm = float(getattr(args, "max_grad_norm", 0.0))
     data_iter = cycle(loader)
     losses = []
     optimizer.zero_grad(set_to_none=True)
@@ -292,7 +301,11 @@ def train_native(model_name: str, pairs: list[tuple[str, str]], args: argparse.N
             loss = out.loss / args.gradient_accumulation_steps
             loss.backward()
             step_losses.append(float(loss.detach().cpu().item()) * args.gradient_accumulation_steps)
+        if max_grad_norm > 0:
+            torch.nn.utils.clip_grad_norm_(params, max_grad_norm)
         optimizer.step()
+        if scheduler is not None:
+            scheduler.step()
         optimizer.zero_grad(set_to_none=True)
         losses.append(sum(step_losses) / len(step_losses))
     report = {
@@ -312,68 +325,76 @@ def main() -> None:
     args = parse_args()
     out = Path("results") / args.output_sub
     out.mkdir(parents=True, exist_ok=True)
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
+    seeds = [int(s) for s in args.seeds.split(",") if s.strip()] or [args.seed]
 
+    # Data + weak labels + base eval are computed ONCE (data seed fixed at --seed);
+    # only the TRAIN seed varies across `seeds`, matching the bounds-table methodology.
     train_qs = load_dream_native("train", args.n_train, args.seed)
     test_qs = load_dream_native("test", args.n_test, args.seed + 1)
-    print(f"loaded train={len(train_qs)} test={len(test_qs)} (DREAM native, K={len(train_qs[0].options)})")
+    k = len(train_qs[0].options)
+    print(f"loaded train={len(train_qs)} test={len(test_qs)} (DREAM native, K={k}) seeds={seeds}")
 
-    # 1. weak model: optional SFT on a small gold split, then label the train pool + eval test (lower bound)
+    # weak model: optional SFT on a small gold split, then label the train pool + eval test (lower bound)
     weak_model, weak_tok = load_causal_lm(args.weak_model, args, trainable_lora=args.weak_train_steps > 0)
     if args.weak_train_steps > 0:
         del weak_model
         clear_memory()
-        gold_subset = train_qs[: args.weak_train_n]
         weak_model, weak_tok, _ = train_native(
-            args.weak_model, build_pairs(gold_subset, "ground_truth"), args, "weak_sft"
+            args.weak_model, build_pairs(train_qs[: args.weak_train_n], "ground_truth"), args, "weak_sft"
         )
     label_weak(weak_model, weak_tok, train_qs, args.device, args.max_length, args.weak_scoring)
     weak_eval, _ = evaluate_native(weak_model, weak_tok, test_qs, args.device, args.max_length, "weak eval")
     weak_train_acc = float(np.mean([q.weak_pred == q.gold for q in train_qs]))
-    label_dist = {str(i): int(sum(q.weak_pred == i for q in train_qs)) for i in range(len(train_qs[0].options))}
+    label_dist = {str(i): int(sum(q.weak_pred == i for q in train_qs)) for i in range(k)}
     del weak_model
     clear_memory()
 
-    # 2. base strong zero-shot (untrained reference)
     base_model, base_tok = load_causal_lm(args.strong_model, args, trainable_lora=False)
     base_eval, _ = evaluate_native(base_model, base_tok, test_qs, args.device, args.max_length, "base strong eval")
     del base_model
     clear_memory()
 
-    # 3. each method: select -> train strong toward (weak or gold) option -> eval
-    runs = {}
-    for method in [m.strip() for m in args.methods.split(",") if m.strip()]:
-        subset = select_subset(train_qs, method, args.keep_frac, args.seed)
-        pairs = build_pairs(subset, method)
-        model, tok, rep = train_native(args.strong_model, pairs, args, method)
-        ev, _ = evaluate_native(model, tok, test_qs, args.device, args.max_length, f"eval {method}")
-        rep.update(ev)
-        runs[method] = rep
-        del model
-        clear_memory()
+    methods = [m.strip() for m in args.methods.split(",") if m.strip()]
+    METRICS = ("accuracy_norm", "accuracy_raw", "auroc")
+    collected = {m: {kk: [] for kk in METRICS} for m in methods}
+    per_seed = []
+    for sd in seeds:
+        random.seed(sd)
+        np.random.seed(sd)
+        torch.manual_seed(sd)
+        for method in methods:
+            subset = select_subset(train_qs, method, args.keep_frac, sd)
+            pairs = build_pairs(subset, method)
+            model, tok, _ = train_native(args.strong_model, pairs, args, f"{method}_s{sd}")
+            ev, _ = evaluate_native(model, tok, test_qs, args.device, args.max_length, f"eval {method}_s{sd}")
+            for kk in METRICS:
+                collected[method][kk].append(ev[kk])
+            per_seed.append({"seed": sd, "method": method, **ev})
+            del model
+            clear_memory()
 
+    def agg(vals):
+        return {"mean": float(np.mean(vals)), "std": float(np.std(vals)), "n": len(vals)}
+
+    method_summary = {m: {kk: agg(v) for kk, v in collected[m].items()} for m in methods}
     summary = {
-        "dataset": "dream_native",
-        "config": vars(args),
+        "dataset": "dream_native_multiseed",
+        "config": {kk: vv for kk, vv in vars(args).items() if kk != "device"},
+        "seeds": seeds,
         "weak_train_accuracy": weak_train_acc,
         "weak_label_distribution": label_dist,
         "bounds": {"weak": weak_eval, "base_strong": base_eval},
-        "runs": runs,
+        "methods": method_summary,
+        "per_seed": per_seed,
     }
     (out / "summary.json").write_text(json.dumps(summary, indent=2))
 
-    # console bounds table
-    print("\n=== DREAM native bounds (accuracy_norm / accuracy_raw / auroc) ===")
-
-    def fmt(name, d):
-        print(f"{name:22} norm={d['accuracy_norm']:.3f}  raw={d['accuracy_raw']:.3f}  auroc={d['auroc']:.3f}")
-
-    fmt("weak (lower)", weak_eval)
-    fmt("base-strong 0shot", base_eval)
-    for m, rep in runs.items():
-        fmt(m, rep)
+    print(f"\n=== DREAM native bounds (accuracy_norm, mean ± std over {len(seeds)} train seeds) ===")
+    print(f"{'weak (lower)':22} {weak_eval['accuracy_norm']:.3f}")
+    print(f"{'base-strong 0shot':22} {base_eval['accuracy_norm']:.3f}")
+    for m in methods:
+        a = method_summary[m]["accuracy_norm"]
+        print(f"{m:22} {a['mean']:.3f} ± {a['std']:.3f}")
     print(f"\nweak train acc={weak_train_acc:.3f}  weak label dist={label_dist}")
     print(f"summary -> {out / 'summary.json'}")
 
