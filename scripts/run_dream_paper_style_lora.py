@@ -71,7 +71,7 @@ class LoraExample:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", choices=["dream", "sciq", "paws", "anli"], default="dream")
+    parser.add_argument("--dataset", choices=["dream", "sciq", "paws", "anli", "hellaswag"], default="dream")
     parser.add_argument(
         "--anli-round",
         choices=["r1", "r2", "r3"],
@@ -388,6 +388,85 @@ def load_sciq_multichoice_eval(n_questions: int, seed: int, use_support: bool) -
     return out
 
 
+def format_hellaswag_paper_style(ex: dict, row_id: int, rng: random.Random) -> dict:
+    """Format HellaSwag as binary candidate-ending correctness: '{context} {ending}'."""
+    endings = list(ex["endings"])
+    correct = int(ex["label"])
+    hard_label = int(rng.random() < 0.5)
+    if hard_label:
+        ans = endings[correct]
+    else:
+        wrong = [e for i, e in enumerate(endings) if i != correct]
+        ans = rng.choice(wrong)
+    ctx = (ex.get("ctx") or "").strip()
+    txt = f"{ctx} {ans}".strip()
+    return {
+        "id": f"hellaswag-{row_id}",
+        "source_id": f"hellaswag-{row_id}",
+        "txt": txt,
+        "labels": hard_label,
+        "gt_labels": hard_label,
+    }
+
+
+def load_and_process_hellaswag_split(split: str, n_docs: int, seed: int) -> Dataset:
+    raw = load_dataset("Rowan/hellaswag", split=split).shuffle(seed=seed)
+    raw = raw.filter(lambda ex: ex["label"] != "")  # test labels are hidden -> drop them
+    if len(raw) < n_docs:
+        print(f"hellaswag/{split} has < {n_docs} labeled docs, using all {len(raw)}")
+    raw = raw.select(range(min(n_docs, len(raw))))
+    rng = random.Random(seed)
+    rows = [format_hellaswag_paper_style(ex, row_id=i, rng=rng) for i, ex in enumerate(raw)]
+    ds = Dataset.from_list(rows)
+    ds = ds.filter(lambda ex: ex["txt"] != "")
+    ds = balance_binary_dataset(ds, seed)
+    return ds
+
+
+def load_paper_hellaswag_splits(n_train: int, n_val: int, n_test: int, seed: int) -> SplitBundle:
+    # HellaSwag test labels are hidden -> train pool from "train", eval from "validation".
+    train_pool = load_and_process_hellaswag_split("train", n_train + n_val, seed)
+    test = load_and_process_hellaswag_split("validation", n_test, seed + 2)
+    val_count = min(n_val, len(train_pool))
+    val = train_pool.select(range(val_count))
+    train = train_pool.select(range(val_count, len(train_pool)))
+    train_halves = train.train_test_split(test_size=0.5, seed=seed)
+    return SplitBundle(
+        weak_train=train_halves["train"],
+        strong_train=train_halves["test"],
+        val=val,
+        test=test,
+    )
+
+
+def load_hellaswag_multichoice_eval(n_questions: int, seed: int) -> list[dict]:
+    """Per-question 4-way multiple-choice eval for HellaSwag (pick the best of 4 endings)."""
+    raw = load_dataset("Rowan/hellaswag", split="validation").shuffle(seed=seed)
+    rng = random.Random(seed + 7)
+    out: list[dict] = []
+    n = 0
+    for ex in raw:
+        if n >= n_questions:
+            break
+        if ex["label"] == "":
+            continue
+        ctx = (ex.get("ctx") or "").strip()
+        endings = list(ex["endings"])
+        correct = int(ex["label"])
+        order = rng.sample(range(len(endings)), len(endings))
+        for slot, oi in enumerate(order):
+            out.append(
+                {
+                    "id": f"hellaswag-mc-{n}-{slot}",
+                    "source_id": f"hellaswag-mc-{n}",
+                    "txt": f"{ctx} {endings[oi]}".strip(),
+                    "labels": int(oi == correct),
+                }
+            )
+        n += 1
+    return out
+
+
 def format_paws_paper_style(ex: dict, row_id: int) -> dict:
     txt = (
         f"Sent 1: {ex['sentence1']}\n"
@@ -559,6 +638,8 @@ def load_paper_style_splits(args: argparse.Namespace) -> SplitBundle:
         return load_paper_anli_splits(
             args.n_train, args.n_val, args.n_test, args.seed, args.anli_round
         )
+    if args.dataset == "hellaswag":
+        return load_paper_hellaswag_splits(args.n_train, args.n_val, args.n_test, args.seed)
     raise ValueError(f"Unsupported dataset: {args.dataset}")
 
 
@@ -600,6 +681,13 @@ def format_summary(args: argparse.Namespace) -> dict[str, str]:
             "candidate_text": "'Premise: ...\\nHypothesis: ...\\nQ: What is the relationship ...? A: {candidate}'",
             "label": "1 if the candidate relation (entailment/neutral/contradiction) is the gold ANLI label, else 0",
             "takeaway": f"This run uses ANLI round {args.anli_round} as binary candidate-relation correctness (adversarial NLI -> weak model near chance).",
+        }
+    if args.dataset == "hellaswag":
+        return {
+            "task": "paper-style binary candidate-ending correctness (HellaSwag)",
+            "candidate_text": "'{context} {ending}'",
+            "label": "1 if the ending is the gold HellaSwag continuation, else 0",
+            "takeaway": "This run uses HellaSwag (4-way commonsense ending) as binary candidate-ending correctness -> weak model near chance.",
         }
     raise ValueError(f"Unsupported dataset: {args.dataset}")
 
@@ -1583,6 +1671,8 @@ def main() -> None:
             multichoice_rows = load_anli_multichoice_eval(
                 args.n_eval_questions, args.seed + 2, args.anli_round
             )
+        elif args.dataset == "hellaswag":
+            multichoice_rows = load_hellaswag_multichoice_eval(args.n_eval_questions, args.seed + 2)
         else:
             multichoice_rows = []
         if multichoice_rows:
