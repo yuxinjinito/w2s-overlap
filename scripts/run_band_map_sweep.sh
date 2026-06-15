@@ -28,6 +28,10 @@ export KNN_REFERENCE_CROSS_FIT="${KNN_REFERENCE_CROSS_FIT:-1}"
 export CROSS_FIT_FOLDS="${CROSS_FIT_FOLDS:-5}"
 export COMMITTEE_MEMBERS="${COMMITTEE_MEMBERS:-8}"
 export COMMITTEE_KEEP_FRACS="${COMMITTEE_KEEP_FRACS:-0.2,0.5}"
+# EPOCHS>0 => train each run for that many full passes over its ACTUAL subset
+# (no-filter -> all data, f50 -> the real 50%), instead of the fixed compute-matched
+# MAX_TRAIN_STEPS cap. Leave 0 to keep the old compute-matched behaviour.
+export EPOCHS="${EPOCHS:-0}"
 
 # {confidence, knn} x {high, low} + knn_mixed(overlap) at 20% & 50%, each with a
 # size-matched random_balanced, plus the full weak_label anchor.

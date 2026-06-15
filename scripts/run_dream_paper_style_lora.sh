@@ -73,6 +73,7 @@ MAX_ITER="${MAX_ITER:-10000}"
 STRONG_BATCH_SIZE="${STRONG_BATCH_SIZE:-1}"
 GRAD_ACCUM="${GRAD_ACCUM:-4}"
 MAX_TRAIN_STEPS="${MAX_TRAIN_STEPS:-100}"
+EPOCHS="${EPOCHS:-0}"
 LR="${LR:-2e-4}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-0.0}"
 WARMUP_STEPS="${WARMUP_STEPS:-0}"
@@ -182,6 +183,7 @@ python3 scripts/run_dream_paper_style_lora.py \
   --strong-batch-size "$STRONG_BATCH_SIZE" \
   --gradient-accumulation-steps "$GRAD_ACCUM" \
   --max-train-steps "$MAX_TRAIN_STEPS" \
+  --epochs "$EPOCHS" \
   --lr "$LR" \
   --weight-decay "$WEIGHT_DECAY" \
   --warmup-steps "$WARMUP_STEPS" \

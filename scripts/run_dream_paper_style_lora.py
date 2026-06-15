@@ -109,6 +109,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--strong-batch-size", type=int, default=1)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=4)
     parser.add_argument("--max-train-steps", type=int, default=100)
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=0,
+        help="If >0, train each run for this many FULL passes over its actual subset "
+        "(no-filter -> all data, f50 -> the real 50%), setting max_train_steps per run = "
+        "epochs * ceil(len(subset)/(batch*grad_accum)). Overrides the fixed compute-matched "
+        "--max-train-steps cap.",
+    )
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--warmup-steps", type=int, default=0)
@@ -1814,15 +1823,23 @@ def main() -> None:
         del tokenizer
         clear_memory()
 
+    eff_batch = max(1, args.strong_batch_size * args.gradient_accumulation_steps)
+    fixed_steps = args.max_train_steps
     for run_name in runs:
         if run_name == "base":
             continue
         train_examples, train_labels = run_subsets[run_name]
+        if args.epochs > 0:
+            # Train this run for `epochs` full passes over its ACTUAL subset
+            # (no-filter -> all data; f50 -> the real 50%), instead of the fixed
+            # compute-matched cap. no-filter therefore gets proportionally more steps.
+            args.max_train_steps = args.epochs * max(1, math.ceil(len(train_examples) / eff_batch))
         report, rows = run_lora_eval(
             args, run_name, train_examples, train_labels, eval_examples, output_dir, eval3_examples
         )
         prediction_columns[run_name] = rows
         run_reports[run_name] = report
+    args.max_train_steps = fixed_steps
 
     write_predictions(output_dir / "eval_predictions.csv", eval_examples, prediction_columns, weak_eval_rows)
     write_strong_train_labels(output_dir / "strong_train_labels.csv", strong_examples, weak_probs_strong, residuals, knn_stats)
