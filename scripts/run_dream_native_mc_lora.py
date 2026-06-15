@@ -39,6 +39,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -49,6 +50,8 @@ from run_dream_w2s_baselines import (
     clear_memory,
     count_params,
     cuda_memory_report,
+    encode_prompt_answer,
+    pad_encoded_batch,
     parse_lora_target_modules,
     require_peft,
     resolve_dtype,
@@ -82,6 +85,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--keep-frac", type=float, default=0.5)
     p.add_argument("--scoring", choices=["norm", "raw"], default="norm",
                    help="argmax basis for native eval headline + confidence")
+    p.add_argument("--loss", choices=["sft", "contrastive"], default="sft",
+                   help="native training objective: sft (Option 1, generate the chosen option) "
+                        "or contrastive (Option 2, chosen-option likelihood > the other options)")
     p.add_argument("--weak-scoring", choices=["norm", "raw"], default="norm")
     p.add_argument("--weak-train-steps", type=int, default=0,
                    help=">0 fine-tunes the weak model on a small gold split first (paper-faithful)")
@@ -321,6 +327,85 @@ def train_native(model_name: str, pairs: list[tuple[str, str]], args: argparse.N
     return model, tok, report
 
 
+def option_scores_grad(model, tokenizer, context, options, device, max_length, normalize):
+    """Per-option log-likelihood of one question's K options, WITH gradients (for the
+    contrastive loss). Returns a length-K tensor of scores (logits)."""
+    encoded = pad_encoded_batch(
+        tokenizer, [encode_prompt_answer(tokenizer, context, " " + o, max_length) for o in options]
+    )
+    encoded = {k: v.to(device) for k, v in encoded.items()}
+    out = model(input_ids=encoded["input_ids"], attention_mask=encoded["attention_mask"], use_cache=False)
+    logits = out.logits[:, :-1, :]
+    targets = encoded["input_ids"][:, 1:]
+    labels = encoded["labels"][:, 1:]
+    logp = torch.log_softmax(logits.float(), dim=-1)
+    tok_lp = logp.gather(-1, targets.unsqueeze(-1)).squeeze(-1)  # [K, L-1]
+    mask = (labels != -100).float()
+    sums = (tok_lp * mask).sum(dim=1)  # [K]
+    counts = mask.sum(dim=1).clamp(min=1.0)
+    return sums / counts if normalize else sums
+
+
+def train_native_contrastive(model_name, subset, args, run_name, use_gold):
+    """Option 2: train so the chosen option's likelihood is highest among the K options
+    (softmax over per-option likelihoods -> cross-entropy on the chosen index)."""
+    start = time.time()
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
+    model, tok = load_causal_lm(model_name, args, trainable_lora=True)
+    model.train()
+    total_params, trainable_params = count_params(model)
+    params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.weight_decay)
+    warmup_steps = int(getattr(args, "warmup_steps", 0))
+    scheduler = (
+        torch.optim.lr_scheduler.LambdaLR(
+            optimizer, lr_lambda=lambda step: min(1.0, float(step + 1) / float(warmup_steps))
+        )
+        if warmup_steps > 0
+        else None
+    )
+    max_grad_norm = float(getattr(args, "max_grad_norm", 0.0))
+    normalize = args.scoring == "norm"
+    order = list(range(len(subset)))
+    random.shuffle(order)
+    ptr = 0
+    losses = []
+    optimizer.zero_grad(set_to_none=True)
+    for _ in tqdm(range(args.max_train_steps), desc=f"train {run_name}"):
+        step_losses = []
+        for _ in range(args.gradient_accumulation_steps):
+            if ptr >= len(order):
+                random.shuffle(order)
+                ptr = 0
+            q = subset[order[ptr]]
+            ptr += 1
+            chosen = q.gold if use_gold else q.weak_pred
+            scores = option_scores_grad(model, tok, q.prompt, q.options, args.device, args.max_length, normalize)
+            loss = F.cross_entropy(scores.unsqueeze(0), torch.tensor([chosen], device=args.device))
+            (loss / args.gradient_accumulation_steps).backward()
+            step_losses.append(float(loss.detach().cpu().item()))
+        if max_grad_norm > 0:
+            torch.nn.utils.clip_grad_norm_(params, max_grad_norm)
+        optimizer.step()
+        if scheduler is not None:
+            scheduler.step()
+        optimizer.zero_grad(set_to_none=True)
+        losses.append(sum(step_losses) / len(step_losses))
+    report = {
+        "run_name": run_name,
+        "n_train": len(subset),
+        "max_train_steps": args.max_train_steps,
+        "total_params": total_params,
+        "trainable_params": trainable_params,
+        "loss_type": "contrastive",
+        "losses": losses,
+        "elapsed_sec": time.time() - start,
+        "cuda_memory": cuda_memory_report(),
+    }
+    return model, tok, report
+
+
 def main() -> None:
     args = parse_args()
     out = Path("results") / args.output_sub
@@ -364,8 +449,14 @@ def main() -> None:
         torch.manual_seed(sd)
         for method in methods:
             subset = select_subset(train_qs, method, args.keep_frac, sd)
-            pairs = build_pairs(subset, method)
-            model, tok, _ = train_native(args.strong_model, pairs, args, f"{method}_s{sd}")
+            if args.loss == "contrastive":
+                model, tok, _ = train_native_contrastive(
+                    args.strong_model, subset, args, f"{method}_s{sd}", use_gold=(method == "ground_truth")
+                )
+            else:
+                model, tok, _ = train_native(
+                    args.strong_model, build_pairs(subset, method), args, f"{method}_s{sd}"
+                )
             ev, _ = evaluate_native(model, tok, test_qs, args.device, args.max_length, f"eval {method}_s{sd}")
             for kk in METRICS:
                 collected[method][kk].append(ev[kk])
