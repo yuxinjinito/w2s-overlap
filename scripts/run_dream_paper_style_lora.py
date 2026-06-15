@@ -54,6 +54,7 @@ from run_dream_w2s_baselines import (
     train_lora_model,
     write_predictions,
 )
+from representation_projection import representation_projection_scores
 
 
 @dataclass
@@ -118,6 +119,10 @@ def parse_args() -> argparse.Namespace:
         "epochs * ceil(len(subset)/(batch*grad_accum)). Overrides the fixed compute-matched "
         "--max-train-steps cap.",
     )
+    parser.add_argument("--rp-reg", type=float, default=0.1,
+                        help="Kernel ridge reg for the representation-projection score (rp_high/rp_low).")
+    parser.add_argument("--rp-components", type=int, default=0,
+                        help="PCA components for the representation-projection score (0 = use all).")
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--warmup-steps", type=int, default=0)
@@ -254,6 +259,8 @@ def requested_runs(args: argparse.Namespace) -> list[str]:
             "knn_mixed_balanced_f",
             "confidence_high_balanced_f",
             "confidence_low_balanced_f",
+            "rp_high_balanced_f",
+            "rp_low_balanced_f",
             "random_balanced_f",
         ):
             if name.startswith(pref) and name[len(pref):].isdigit():
@@ -1573,6 +1580,13 @@ def main() -> None:
         weak_correct_weak_train,
         args.knn_k,
     )
+    rp_scores = representation_projection_scores(
+        np.asarray(weak_acts["strong_train"], dtype=np.float64),
+        np.asarray(strong_acts["strong_train"], dtype=np.float64),
+        weak_preds_strong,
+        reg=args.rp_reg,
+        n_components=(args.rp_components or None),
+    )
     del strong_acts
     clear_memory()
 
@@ -1837,6 +1851,18 @@ def main() -> None:
         run_subsets[f"knn_low_balanced_f{pct}"] = (
             [strong_examples[int(i)] for i in knn_low_bal],
             [weak_labels[int(i)] for i in knn_low_bal],
+        )
+        rp_high_idx, _ = score_band_indices(rp_scores, frac, "high")
+        rp_high_bal = hard_weak_label_balance(rp_high_idx, weak_preds_strong, args.seed + 16000 + fi)
+        run_subsets[f"rp_high_balanced_f{pct}"] = (
+            [strong_examples[int(i)] for i in rp_high_bal],
+            [weak_labels[int(i)] for i in rp_high_bal],
+        )
+        rp_low_idx, _ = score_band_indices(rp_scores, frac, "low")
+        rp_low_bal = hard_weak_label_balance(rp_low_idx, weak_preds_strong, args.seed + 16500 + fi)
+        run_subsets[f"rp_low_balanced_f{pct}"] = (
+            [strong_examples[int(i)] for i in rp_low_bal],
+            [weak_labels[int(i)] for i in rp_low_bal],
         )
         knn_mixed_idx, _ = score_closest_indices(
             knn_stats["knn_correct_rate"], frac, args.knn_mixed_center, "mixed"
