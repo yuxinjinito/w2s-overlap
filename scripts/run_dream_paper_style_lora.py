@@ -233,6 +233,7 @@ def requested_runs(args: argparse.Namespace) -> list[str]:
         "base",
         "ground_truth",
         "weak_label",
+        "weak_label_balanced",
         "curriculum_easy",
         "curriculum_hard",
         "middle_unbalanced",
@@ -269,6 +270,7 @@ def requested_runs(args: argparse.Namespace) -> list[str]:
             "el_high_balanced_f",
             "el_low_balanced_f",
             "random_balanced_f",
+            "random_unbalanced_f",
         ):
             if name.startswith(pref) and name[len(pref):].isdigit():
                 return True
@@ -1826,6 +1828,13 @@ def main() -> None:
         clear_memory()
         print(f"[multichoice] weak-probe lower bound accuracy_3class = {weak_eval3_acc:.3f}")
     weak_labels = weak_preds_strong.tolist()
+    # weak_label_balanced = the FULL no-filter set balanced by the weak predicted label.
+    # With weak_label (unbalanced full), random_balanced_f50 (balanced half) and
+    # random_unbalanced_f50 (unbalanced half) it forms a balanced x fraction 2x2, so a
+    # "random > no-filter" gap can be split into a balancing effect vs a data-fraction effect.
+    weak_label_balanced_indices = hard_weak_label_balance(
+        np.arange(len(weak_preds_strong)), weak_preds_strong, args.seed + 500
+    )
     # Curriculum: same full no-filter set as weak_label, trained in a fixed order by weak
     # confidence (easy = most-confident first, hard = least-confident first). Control is
     # weak_label (random order); see train_lora_model's curriculum_order.
@@ -1836,6 +1845,10 @@ def main() -> None:
     run_subsets: dict[str, tuple[list[LoraExample], list[int]]] = {
         "ground_truth": (strong_examples, strong_train_labels.tolist()),
         "weak_label": (strong_examples, weak_labels),
+        "weak_label_balanced": (
+            [strong_examples[int(i)] for i in weak_label_balanced_indices],
+            [weak_labels[int(i)] for i in weak_label_balanced_indices],
+        ),
         "curriculum_easy": (strong_examples, weak_labels),
         "curriculum_hard": (strong_examples, weak_labels),
         "middle_unbalanced": (
@@ -1934,6 +1947,13 @@ def main() -> None:
         run_subsets[f"random_balanced_f{pct}"] = (
             [strong_examples[int(i)] for i in rand_bal],
             [weak_labels[int(i)] for i in rand_bal],
+        )
+        rand_unbal = random_unbalanced_indices(
+            n_strong_examples, int(round(frac * n_strong_examples)), args.seed + 12500 + fi
+        )
+        run_subsets[f"random_unbalanced_f{pct}"] = (
+            [strong_examples[int(i)] for i in rand_unbal],
+            [weak_labels[int(i)] for i in rand_unbal],
         )
         knn_high_idx, _ = score_band_indices(knn_stats["knn_correct_rate"], frac, "high")
         knn_high_bal = hard_weak_label_balance(knn_high_idx, weak_preds_strong, args.seed + 13000 + fi)
