@@ -444,12 +444,23 @@ def train_lora_model(
         weight_decay=float(getattr(args, "weight_decay", 0.0)),
     )
     warmup_steps = int(getattr(args, "warmup_steps", 0))
+    lr_decay = str(getattr(args, "lr_decay", "linear")).lower()
+    total_steps = max(1, int(args.max_train_steps))
+
+    def _lr_factor(step: int) -> float:
+        if warmup_steps > 0 and step < warmup_steps:
+            return float(step + 1) / float(warmup_steps)
+        if lr_decay == "linear":
+            # linear decay from 1.0 (end of warmup) to ~0 at the final step, so training
+            # settles instead of oscillating at constant lr (which made small noisy
+            # subsets occasionally land on a bad final model).
+            denom = max(1, total_steps - warmup_steps)
+            return max(0.0, float(total_steps - step) / float(denom))
+        return 1.0  # "none" -> constant after warmup
+
     scheduler = None
-    if warmup_steps > 0:
-        scheduler = torch.optim.lr_scheduler.LambdaLR(
-            optimizer,
-            lr_lambda=lambda step: min(1.0, float(step + 1) / float(warmup_steps)),
-        )
+    if warmup_steps > 0 or lr_decay != "none":
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=_lr_factor)
     data_iter = cycle(loader)
     losses = []
     optimizer.zero_grad(set_to_none=True)
@@ -486,6 +497,7 @@ def train_lora_model(
         "lr": args.lr,
         "weight_decay": float(getattr(args, "weight_decay", 0.0)),
         "warmup_steps": int(getattr(args, "warmup_steps", 0)),
+        "lr_decay": str(getattr(args, "lr_decay", "linear")).lower(),
         "max_grad_norm": float(getattr(args, "max_grad_norm", 0.0)),
         "lora_r": args.lora_r,
         "lora_alpha": args.lora_alpha,

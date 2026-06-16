@@ -102,6 +102,7 @@ fi
 LR="${LR:-2e-4}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-0.0}"
 WARMUP_STEPS="${WARMUP_STEPS:-0}"
+LR_DECAY="${LR_DECAY:-linear}"
 MAX_GRAD_NORM="${MAX_GRAD_NORM:-0.0}"
 LORA_R="${LORA_R:-8}"
 LORA_ALPHA="${LORA_ALPHA:-16}"
@@ -212,6 +213,7 @@ python3 scripts/run_dream_paper_style_lora.py \
   --lr "$LR" \
   --weight-decay "$WEIGHT_DECAY" \
   --warmup-steps "$WARMUP_STEPS" \
+  --lr-decay "$LR_DECAY" \
   --max-grad-norm "$MAX_GRAD_NORM" \
   --lora-r "$LORA_R" \
   --lora-alpha "$LORA_ALPHA" \

@@ -127,6 +127,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--warmup-steps", type=int, default=0)
+    parser.add_argument("--lr-decay", choices=["linear", "none"], default="linear",
+                        help="LR schedule after warmup: linear decay to 0 (default) or constant.")
     parser.add_argument("--max-grad-norm", type=float, default=0.0)
     parser.add_argument("--lora-r", type=int, default=8)
     parser.add_argument("--lora-alpha", type=int, default=16)
