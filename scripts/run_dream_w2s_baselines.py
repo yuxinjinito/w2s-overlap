@@ -417,6 +417,7 @@ def train_lora_model(
     train_labels: list[int],
     run_name: str,
     output_dir: Path,
+    curriculum_order=None,
 ) -> tuple[object, object, dict]:
     start_time = time.time()
     if torch.cuda.is_available():
@@ -424,10 +425,16 @@ def train_lora_model(
     model, tokenizer = load_strong_model_and_tokenizer(args, trainable_lora=True)
     model.train()
     total_params, trainable_params = count_params(model)
+    # Curriculum: when an order is given, present examples in that fixed order each pass
+    # (easy/reliable -> hard) instead of random shuffling. The effective batch, #steps and
+    # data are unchanged -- only the ordering differs (the control is the shuffled run).
+    if curriculum_order is not None:
+        train_examples = [train_examples[i] for i in curriculum_order]
+        train_labels = [train_labels[i] for i in curriculum_order]
     loader = DataLoader(
         PromptAnswerDataset(train_examples, train_labels),
         batch_size=args.strong_batch_size,
-        shuffle=True,
+        shuffle=(curriculum_order is None),
         collate_fn=Collator(tokenizer, args.max_length),
     )
     trainable_parameters = [p for p in model.parameters() if p.requires_grad]

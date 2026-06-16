@@ -231,6 +231,8 @@ def requested_runs(args: argparse.Namespace) -> list[str]:
         "base",
         "ground_truth",
         "weak_label",
+        "curriculum_easy",
+        "curriculum_hard",
         "middle_unbalanced",
         "middle_balanced",
         "confidence_middle_unbalanced",
@@ -1335,6 +1337,7 @@ def run_lora_eval(
     eval_examples: list[LoraExample],
     output_dir: Path,
     eval3_examples: list[LoraExample] | None = None,
+    curriculum_order=None,
 ) -> tuple[dict, list[dict]]:
     if args.train_seed is not None:
         torch.manual_seed(args.train_seed)
@@ -1342,7 +1345,9 @@ def run_lora_eval(
         random.seed(args.train_seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(args.train_seed)
-    model, tokenizer, report = train_lora_model(args, train_examples, train_labels, run_name, output_dir)
+    model, tokenizer, report = train_lora_model(
+        args, train_examples, train_labels, run_name, output_dir, curriculum_order=curriculum_order
+    )
     eval_summary, rows = evaluate_yes_no(
         model,
         tokenizer,
@@ -1819,9 +1824,18 @@ def main() -> None:
         clear_memory()
         print(f"[multichoice] weak-probe lower bound accuracy_3class = {weak_eval3_acc:.3f}")
     weak_labels = weak_preds_strong.tolist()
+    # Curriculum: same full no-filter set as weak_label, trained in a fixed order by weak
+    # confidence (easy = most-confident first, hard = least-confident first). Control is
+    # weak_label (random order); see train_lora_model's curriculum_order.
+    curriculum_orders = {
+        "curriculum_easy": list(np.argsort(-weak_confidences_strong)),
+        "curriculum_hard": list(np.argsort(weak_confidences_strong)),
+    }
     run_subsets: dict[str, tuple[list[LoraExample], list[int]]] = {
         "ground_truth": (strong_examples, strong_train_labels.tolist()),
         "weak_label": (strong_examples, weak_labels),
+        "curriculum_easy": (strong_examples, weak_labels),
+        "curriculum_hard": (strong_examples, weak_labels),
         "middle_unbalanced": (
             [strong_examples[int(i)] for i in middle_indices],
             [weak_labels[int(i)] for i in middle_indices],
@@ -2056,7 +2070,8 @@ def main() -> None:
             # compute-matched cap. no-filter therefore gets proportionally more steps.
             args.max_train_steps = args.epochs * max(1, math.ceil(len(train_examples) / eff_batch))
         report, rows = run_lora_eval(
-            args, run_name, train_examples, train_labels, eval_examples, output_dir, eval3_examples
+            args, run_name, train_examples, train_labels, eval_examples, output_dir, eval3_examples,
+            curriculum_order=curriculum_orders.get(run_name),
         )
         prediction_columns[run_name] = rows
         run_reports[run_name] = report
