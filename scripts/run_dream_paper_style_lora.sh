@@ -74,6 +74,31 @@ STRONG_BATCH_SIZE="${STRONG_BATCH_SIZE:-1}"
 GRAD_ACCUM="${GRAD_ACCUM:-4}"
 MAX_TRAIN_STEPS="${MAX_TRAIN_STEPS:-100}"
 EPOCHS="${EPOCHS:-0}"
+
+# Optional adaptive GPU utilisation. With AUTO_BATCH=1 we size the *physical* batch to
+# the GPU's free memory at launch (re-checked per seed -- each seed is a fresh process),
+# while holding the EFFECTIVE batch (strong_batch_size * grad_accum) fixed via grad_accum.
+# So the optimisation and #steps stay identical regardless of how busy the GPU was at
+# launch; only the GPU fill (hence speed) adapts. Free GPU -> bigger physical batch ->
+# higher utilisation; busy/shared GPU -> smaller batch -> no OOM. Set EFF_BATCH to raise
+# the effective batch (changes the optimisation; default keeps the current value).
+AUTO_BATCH="${AUTO_BATCH:-0}"
+if [ "$AUTO_BATCH" = "1" ]; then
+  EFF_BATCH="${EFF_BATCH:-$(( STRONG_BATCH_SIZE * GRAD_ACCUM ))}"
+  _gpu="${CUDA_VISIBLE_DEVICES:-0}"; _gpu="${_gpu%%,*}"
+  _free=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits -i "${_gpu:-0}" 2>/dev/null | head -1 | tr -dc '0-9')
+  _free="${_free:-0}"
+  if   [ "$_free" -ge 34000 ]; then _b=8
+  elif [ "$_free" -ge 26000 ]; then _b=4
+  elif [ "$_free" -ge 21000 ]; then _b=2
+  else _b=1; fi
+  [ "$_b" -gt "$EFF_BATCH" ] && _b="$EFF_BATCH"
+  while [ "$_b" -gt 1 ] && [ $(( EFF_BATCH % _b )) -ne 0 ]; do _b=$(( _b / 2 )); done
+  [ "$_b" -lt 1 ] && _b=1
+  STRONG_BATCH_SIZE="$_b"
+  GRAD_ACCUM=$(( EFF_BATCH / _b ))
+  echo "[auto-batch] GPU ${_gpu:-0} free=${_free}MiB -> strong_batch_size=${STRONG_BATCH_SIZE} grad_accum=${GRAD_ACCUM} (effective=${EFF_BATCH})"
+fi
 LR="${LR:-2e-4}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-0.0}"
 WARMUP_STEPS="${WARMUP_STEPS:-0}"
