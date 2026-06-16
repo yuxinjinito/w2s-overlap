@@ -55,6 +55,7 @@ from run_dream_w2s_baselines import (
     write_predictions,
 )
 from representation_projection import representation_projection_scores
+from excess_loss import excess_loss_scores
 
 
 @dataclass
@@ -261,6 +262,10 @@ def requested_runs(args: argparse.Namespace) -> list[str]:
             "confidence_low_balanced_f",
             "rp_high_balanced_f",
             "rp_low_balanced_f",
+            "el_high_balanced_f",
+            "el_low_balanced_f",
+            "el_nll_high_balanced_f",
+            "el_nll_low_balanced_f",
             "random_balanced_f",
         ):
             if name.startswith(pref) and name[len(pref):].isdigit():
@@ -1017,7 +1022,7 @@ def score_closest_indices(
 ) -> tuple[np.ndarray, dict[str, float | str]]:
     """Keep examples whose score is closest to a target value.
 
-    For kNN filtering, John's intended "overlap-like" points are not
+    For kNN filtering, the intended "overlap-like" points are not
     necessarily the middle quantile of the score distribution. They are points
     whose neighborhoods are mixed between weak-correct and weak-wrong reference
     examples. With a correct-neighbor-rate score, that means closest to 0.5.
@@ -1587,6 +1592,22 @@ def main() -> None:
         reg=args.rp_reg,
         n_components=(args.rp_components or None),
     )
+    # Untuned-strong correctness predictor: a linear probe on the BASE strong
+    # representations, mirroring the weak labeler (a probe on weak reps). Gives
+    # P_strong(label=1) on strong_train for the excess-loss / learnability score
+    # loss_weak(x) - loss_untuned_strong(x).
+    strong_probe = fit_probe(
+        strong_acts["weak_train"],
+        torch.tensor(weak_train_labels, dtype=torch.float32),
+        args.l2_penalty,
+        args.max_iter,
+        device,
+    )
+    strong_probs_strong = predict_probe(strong_probe, strong_acts["strong_train"], device)
+    el_ent_scores = excess_loss_scores(weak_probs_strong, strong_probs_strong, loss="entropy")
+    el_nll_scores = excess_loss_scores(
+        weak_probs_strong, strong_probs_strong, weak_preds_strong, loss="nll"
+    )
     del strong_acts
     clear_memory()
 
@@ -1863,6 +1884,31 @@ def main() -> None:
         run_subsets[f"rp_low_balanced_f{pct}"] = (
             [strong_examples[int(i)] for i in rp_low_bal],
             [weak_labels[int(i)] for i in rp_low_bal],
+        )
+        # excess-loss / learnability: loss_weak - loss_untuned_strong, entropy & nll flavors
+        el_high_idx, _ = score_band_indices(el_ent_scores, frac, "high")
+        el_high_bal = hard_weak_label_balance(el_high_idx, weak_preds_strong, args.seed + 17000 + fi)
+        run_subsets[f"el_high_balanced_f{pct}"] = (
+            [strong_examples[int(i)] for i in el_high_bal],
+            [weak_labels[int(i)] for i in el_high_bal],
+        )
+        el_low_idx, _ = score_band_indices(el_ent_scores, frac, "low")
+        el_low_bal = hard_weak_label_balance(el_low_idx, weak_preds_strong, args.seed + 17500 + fi)
+        run_subsets[f"el_low_balanced_f{pct}"] = (
+            [strong_examples[int(i)] for i in el_low_bal],
+            [weak_labels[int(i)] for i in el_low_bal],
+        )
+        el_nll_high_idx, _ = score_band_indices(el_nll_scores, frac, "high")
+        el_nll_high_bal = hard_weak_label_balance(el_nll_high_idx, weak_preds_strong, args.seed + 18000 + fi)
+        run_subsets[f"el_nll_high_balanced_f{pct}"] = (
+            [strong_examples[int(i)] for i in el_nll_high_bal],
+            [weak_labels[int(i)] for i in el_nll_high_bal],
+        )
+        el_nll_low_idx, _ = score_band_indices(el_nll_scores, frac, "low")
+        el_nll_low_bal = hard_weak_label_balance(el_nll_low_idx, weak_preds_strong, args.seed + 18500 + fi)
+        run_subsets[f"el_nll_low_balanced_f{pct}"] = (
+            [strong_examples[int(i)] for i in el_nll_low_bal],
+            [weak_labels[int(i)] for i in el_nll_low_bal],
         )
         knn_mixed_idx, _ = score_closest_indices(
             knn_stats["knn_correct_rate"], frac, args.knn_mixed_center, "mixed"
