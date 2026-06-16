@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Stable Dream LoRA filtering comparison with John's revised kNN score.
+# Stable Dream LoRA filtering comparison with the revised kNN score.
 #
 # kNN score:
 #   reference set = weak_train examples embedded with the strong model

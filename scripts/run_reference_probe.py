@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""A closer reproduction of Changho's weak-probe confidence path.
+"""A closer reproduction of the reference weak-probe confidence path.
 
 This script is intentionally narrower than the original repository: it supports
-BoolQ first, but mirrors the important implementation choices from Changho's
+BoolQ first, but mirrors the important implementation choices from the reference
 probe experiment more closely than run_probe_confidence.py:
 
 - original-style BoolQ formatting: "Passage: ...\nQuestion: ..."
@@ -13,7 +13,7 @@ probe experiment more closely than run_probe_confidence.py:
 - L-BFGS logistic probe with L2 penalty
 - confidence = 2 * abs(probe_prob(label=1) - 0.5)
 
-The key target split is strong_train, because Changho's overlap code uses the
+The key target split is strong_train, because the reference overlap code uses the
 weak probe to pseudo-label the strong_train activations before computing weak
 confidence and hard/easy-or-overlap partitions.
 """
@@ -68,7 +68,7 @@ def resolve_dtype(dtype_arg: str):
     }[dtype_arg]
 
 
-def changho_binary_confidence(prob_label1: np.ndarray) -> np.ndarray:
+def binary_confidence(prob_label1: np.ndarray) -> np.ndarray:
     return 2.0 * np.abs(prob_label1 - 0.5)
 
 
@@ -99,7 +99,7 @@ def balance_hf_binary(ds, seed: int):
     return concatenate_datasets([minority_ds, majority_ds]).shuffle(seed=seed)
 
 
-def load_boolq_changho_style(n_train: int, n_val: int, n_test: int, seed: int) -> dict[str, pd.DataFrame]:
+def load_boolq_probe_style(n_train: int, n_val: int, n_test: int, seed: int) -> dict[str, pd.DataFrame]:
     train_raw = load_dataset("boolq", split="train").shuffle(seed=seed)
     test_raw = load_dataset("boolq", split="validation").shuffle(seed=seed)
 
@@ -160,7 +160,7 @@ def extract_final_token_activations(
     return torch.cat(acts, dim=0)
 
 
-class ChanghoLogisticProbe(torch.nn.Module):
+class LogisticProbe(torch.nn.Module):
     def __init__(self, input_dim: int, device: torch.device):
         super().__init__()
         self.linear = torch.nn.Linear(input_dim, 1, device=device)
@@ -209,7 +209,7 @@ def add_predictions(
     out["split"] = split
     out["prediction_source"] = prediction_source
     out["weak_prob_label1"] = probs
-    out["weak_confidence"] = changho_binary_confidence(probs)
+    out["weak_confidence"] = binary_confidence(probs)
     out["weak_pred"] = preds
     out["weak_correct"] = (preds == out["label"].to_numpy()).astype(int)
     return out
@@ -222,7 +222,7 @@ def main() -> None:
     device = resolve_device(args.device)
     dtype = resolve_dtype(args.torch_dtype)
 
-    splits = load_boolq_changho_style(args.n_train, args.n_val, args.n_test, args.seed)
+    splits = load_boolq_probe_style(args.n_train, args.n_val, args.n_test, args.seed)
     weak_train_df = splits["weak_train"]
     target_df = splits[args.target_split]
 
@@ -261,7 +261,7 @@ def main() -> None:
     train_y = torch.tensor(weak_train_df["label"].to_numpy(), dtype=torch.float32, device=device)
     target_x = target_acts.to(device)
 
-    probe = ChanghoLogisticProbe(train_x.shape[1], device=device)
+    probe = LogisticProbe(train_x.shape[1], device=device)
     final_loss = probe.fit(train_x, train_y, args.l2_penalty, args.max_iter)
     train_probs = probe.predict_prob(train_x).detach().cpu().numpy()
     target_probs = probe.predict_prob(target_x).detach().cpu().numpy()
@@ -271,7 +271,7 @@ def main() -> None:
     target_out = add_predictions(
         target_df,
         target_probs,
-        prediction_source="changho_style_weak_activation_logistic_probe",
+        prediction_source="weak_activation_logistic_probe",
         dataset=args.dataset,
         split=args.target_split,
     )
@@ -303,7 +303,7 @@ def main() -> None:
         "dataset": args.dataset,
         "weak_model": args.weak_model,
         "target_split": args.target_split,
-        "prediction_source": "changho_style_weak_activation_logistic_probe",
+        "prediction_source": "weak_activation_logistic_probe",
         "n_weak_train": int(len(weak_train_df)),
         "n_target": int(len(target_out)),
         "probe_final_train_loss": final_loss,

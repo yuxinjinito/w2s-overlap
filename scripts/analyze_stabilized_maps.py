@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fit more stable weak-to-strong activation maps from saved embeddings.
 
-This script is for the "two objects" John asked for:
+This script is for the "two objects" we wanted:
 
 1. a usable optimization matrix A from weak activations to strong activations;
 2. a per-sample residual measuring how much each example changes after mapping.

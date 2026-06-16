@@ -3,7 +3,7 @@ set -euo pipefail
 
 # SciQ downstream W2S rerun with the same candidate-correctness structure as
 # the current paper-style Dream LoRA experiments. This intentionally does not
-# switch SciQ to open-ended generation; John asked to keep SciQ in the same
+# switch SciQ to open-ended generation; we keep SciQ in the same
 # structure for the first cross-dataset check.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

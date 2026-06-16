@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Run the full Llama 3.1 8B weak-to-strong representation-mapping pipeline on
-# the two datasets John asked about after the weak-confidence screen.
+# the two datasets we screened after the weak-confidence screen.
 #
 # Default size matches the larger BoolQ/SciQ/PAWS pass: strong_train has
 # N_TRAIN / 2 examples, then MAX_EXAMPLES selects the mapping set.

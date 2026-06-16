@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compute weak confidence from weak activations plus a logistic probe.
 
-This is a lightweight version of the confidence path used in Changho's overlap
+This is a lightweight version of the confidence path used in the reference overlap
 code:
 
     weak model hidden activations -> small probe -> P(label=1)
@@ -83,7 +83,7 @@ def resolve_dtype(dtype_arg: str):
     }[dtype_arg]
 
 
-def changho_binary_confidence(prob_label1: np.ndarray) -> np.ndarray:
+def binary_confidence(prob_label1: np.ndarray) -> np.ndarray:
     return 2.0 * np.abs(prob_label1 - 0.5)
 
 
@@ -504,7 +504,7 @@ def fit_logistic_probe(
 
 def add_probe_outputs(rows: list[dict], probs: np.ndarray) -> None:
     pred = (probs >= 0.5).astype(int)
-    confidence = changho_binary_confidence(probs)
+    confidence = binary_confidence(probs)
     for i, row in enumerate(rows):
         label = int(row["label"])
         row["prediction_source"] = "weak_activation_logistic_probe"

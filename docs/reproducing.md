@@ -54,15 +54,15 @@ python3 scripts/run_probe_confidence.py \
   --activation-output results/probe_confidence/boolq_qwen05_probe_acts_128.pt
 ```
 
-The stricter Changho-style weak-probe path (weak confidence on the `strong_train` split):
+The stricter reference-style weak-probe path (weak confidence on the `strong_train` split):
 
 ```bash
-python3 scripts/run_changho_style_probe.py \
+python3 scripts/run_reference_probe.py \
   --dataset boolq --weak-model Qwen/Qwen1.5-0.5B \
   --n-train 1024 --n-val 128 --n-test 128 --target-split strong_train \
   --torch-dtype float16 --batch-size 4 \
-  --output results/changho_style/boolq_qwen05_weakprobe_on_strong_train.csv \
-  --activation-output results/changho_style/boolq_qwen05_weakprobe_on_strong_train_acts.pt
+  --output results/reference_style/boolq_qwen05_weakprobe_on_strong_train.csv \
+  --activation-output results/reference_style/boolq_qwen05_weakprobe_on_strong_train_acts.pt
 ```
 
 A multi-dataset confidence sweep (used for the answer-count vs skew analysis) is driven by
@@ -86,7 +86,7 @@ python3 scripts/run_representation_mapping.py \
 
 python3 scripts/analyze_mapping_vs_confidence.py \
   results/representation_mapping/boolq_qwen05_to_qwen18_map_512.csv \
-  --confidence-csv results/changho_style/boolq_qwen05_weakprobe_on_strong_train.csv \
+  --confidence-csv results/reference_style/boolq_qwen05_weakprobe_on_strong_train.csv \
   --merge-on id --primary-loss linear_l2 --plot-heldout-only \
   --report-output results/representation_mapping/boolq_qwen05_to_qwen18_map_512_vs_confidence.txt
 ```

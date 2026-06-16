@@ -2,7 +2,7 @@
 """Compare weak-to-strong mapping losses with weak confidence/correctness.
 
 This script is the follow-up analysis for `run_representation_mapping.py`.
-It merges the representation-mapping output with the Changho-style weak-probe
+It merges the representation-mapping output with the reference-style weak-probe
 confidence CSV, then reports whether mapping losses are related to weak
 confidence or weak correctness.
 """
@@ -24,7 +24,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--confidence-csv",
         default=None,
-        help="CSV with weak_confidence, weak_pred, weak_correct, usually from run_changho_style_probe.py",
+        help="CSV with weak_confidence, weak_pred, weak_correct, usually from run_reference_probe.py",
     )
     parser.add_argument("--merge-on", choices=["id", "text"], default="id")
     parser.add_argument("--text-col", default="text")

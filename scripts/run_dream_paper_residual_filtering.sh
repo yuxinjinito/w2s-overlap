@@ -4,7 +4,7 @@ set -euo pipefail
 # Paper-style Dream residual-filtering rerun.
 #
 # This keeps the Figure A1-style linear-probe setup from
-# `run_dream_paper_linear_probe.sh`, then adds the John-directed filtering
+# `run_dream_paper_linear_probe.sh`, then adds the targeted filtering
 # check: middle residual examples versus same-size random balanced controls.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

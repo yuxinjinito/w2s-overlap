@@ -2,8 +2,8 @@
 """Analyze learned weak-to-strong representation maps.
 
 This reads the optional ``--map-output`` artifact produced by
-``run_representation_mapping.py``. It is meant to inspect the two objects John
-asked for:
+``run_representation_mapping.py``. It is meant to inspect the two objects we
+wanted:
 
 - the learned linear map A from weak activations to strong activations;
 - the per-sample residuals after applying that map.

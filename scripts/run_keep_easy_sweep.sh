@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Keep-easy comparison at 50% kept -- directly answers John's Todo #1:
+# Keep-easy comparison at 50% kept:
 #   "instead of the kNN middle 0.5, pick the top 0.5 with the most weak-correct neighbors."
 #
 # Methods (all balanced, cross-fitted reference labels):
 #   knn_mixed_balanced      = kNN MIDDLE 50% (knn_correct_rate near 0.5; the OLD overlap method)
-#   knn_high_balanced       = kNN TOP 50%    (neighbors mostly weak-correct; John's NEW "keep-easy")
+#   knn_high_balanced       = kNN TOP 50%    (neighbors mostly weak-correct; the "keep-easy" band)
 #   committee_agree_balanced/disagree_balanced = the committee keep-easy / keep-boundary thread
 #   random_balanced/unbalanced, weak_label     = controls / no-selection anchor
 #

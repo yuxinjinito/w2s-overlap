@@ -599,7 +599,7 @@ def main() -> None:
                 "equivalent to the original repo's formatter."
             ),
             "not_this_script": (
-                "This is not the John-directed LoRA/generative yes-no extension; it is the "
+                "This is not the targeted LoRA/generative yes-no extension; it is the "
                 "paper-faithful Figure A1-style sanity check."
             ),
         },

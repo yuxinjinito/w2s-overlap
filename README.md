@@ -37,8 +37,8 @@ details.
 
 | Stage | What it does | Entry point(s) |
 |---|---|---|
-| **Inference + confidence** | Run weak/strong models, save per-example predictions and Changho-style binary confidence `2·\|p−0.5\|` | `scripts/run_inference_confidence.py` |
-| **Probe confidence** | Extract weak final-token activations, fit a logistic probe, output probe-based confidence | `scripts/run_probe_confidence.py`, `scripts/run_changho_style_probe.py` |
+| **Inference + confidence** | Run weak/strong models, save per-example predictions and reference-style binary confidence `2·\|p−0.5\|` | `scripts/run_inference_confidence.py` |
+| **Probe confidence** | Extract weak final-token activations, fit a logistic probe, output probe-based confidence | `scripts/run_probe_confidence.py`, `scripts/run_reference_probe.py` |
 | **Representation mapping** | Fit weak→strong maps (linear regression, Procrustes, 1-layer ReLU); save the map and per-sample residual L2 | `scripts/run_representation_mapping.py`, `scripts/run_dream_aligned_residual_mapping.py` |
 | **W2S LoRA baselines** | Strong model: base, ground-truth-trained, weak-label-trained (LoRA) | `scripts/run_dream_w2s_baselines.py` |
 | **Paper-faithful probing** | Replicate the Figure A1 linear-probing setup (weak/strong/Full-W2S) | `scripts/run_dream_paper_linear_probe.py` |
@@ -66,7 +66,7 @@ details.
 │   ├── reproducing.md      # environment + exact commands per experiment
 │   └── results.md          # summary of preliminary findings
 ├── scripts/                # all runnable code (flat; the run_*.py modules import each other)
-│   ├── run_inference_confidence.py / run_probe_confidence.py / run_changho_style_probe.py
+│   ├── run_inference_confidence.py / run_probe_confidence.py / run_reference_probe.py
 │   ├── run_representation_mapping.py / run_dream_aligned_residual_mapping.py
 │   ├── run_dream_w2s_baselines.py / run_dream_paper_linear_probe.py
 │   ├── run_dream_paper_style_lora.py / run_dream_paper_residual_filtering.py / run_dream_residual_filter_extras.py

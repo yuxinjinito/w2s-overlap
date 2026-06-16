@@ -41,7 +41,7 @@ OUT_DIR="${OUT_DIR:-results/representation_mapping/llama31_8b_full}"
 RUN_NAME="${RUN_NAME:-${DATASET}_qwen05_to_llama31_8b_map_${MAX_EXAMPLES}}"
 if [[ -z "${CONFIDENCE_CSV:-}" ]]; then
   if [[ "$DATASET" == "boolq" ]]; then
-    CONFIDENCE_CSV="results/changho_style/boolq_qwen05_weakprobe_on_strong_train.csv"
+    CONFIDENCE_CSV="results/reference_style/boolq_qwen05_weakprobe_on_strong_train.csv"
   else
     CONFIDENCE_CSV=""
   fi

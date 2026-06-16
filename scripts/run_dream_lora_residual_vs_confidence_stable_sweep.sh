@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Stable Dream LoRA sweep for John's residual-vs-confidence filtering question.
+# Stable Dream LoRA sweep for the residual-vs-confidence filtering question.
 #
 # Question:
 #   Does L2 residual filtering from the weak-to-strong representation map behave

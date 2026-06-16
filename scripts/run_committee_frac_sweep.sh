@@ -6,7 +6,7 @@ set -euo pipefail
 # Produces a label-complexity / data-efficiency curve: accuracy vs the fraction of
 # strong_train kept, for
 #   - committee_agree    (keep the most RELIABLE = lowest committee disagreement)
-#   - knn_high           (keep the EASY points = neighbors mostly weak-correct; John's ask)
+#   - knn_high           (keep the EASY points = neighbors mostly weak-correct)
 #   - committee_disagree (keep the most BOUNDARY = highest committee disagreement)
 #   - random_balanced    (matched control at each fraction)
 # All share one activation/cross-fit/committee pass per seed (cheap to add fracs).

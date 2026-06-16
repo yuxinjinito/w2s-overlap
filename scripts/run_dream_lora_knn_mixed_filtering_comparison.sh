@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Dream LoRA filtering comparison focused on John's revised kNN idea.
+# Dream LoRA filtering comparison focused on the revised kNN idea.
 #
 # Difference from the previous kNN-middle run:
 #   - previous knn_middle_balanced kept the middle quantile of kNN scores;

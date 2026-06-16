@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""DREAM dual-eval: score the SAME models two ways to close John's eval-format question.
+"""DREAM dual-eval: score the SAME models two ways to close the eval-format question.
 
 Trains the strong model with the BINARY discrimination objective (question+option ->
-" yes"/" no" -- the existing W2S setup John did NOT ask to change), then evaluates
+" yes"/" no" -- the existing W2S setup we did NOT change), then evaluates
 each trained model BOTH ways on the test questions:
 
   - DISCRIMINATION (accuracy_3class): per question, pick the option with the highest
     P(correct) from the yes/no head. [what the 2026-06-10 results used]
-  - LIKELIHOOD (John's literal ask): per question, pick the option with the highest
+  - LIKELIHOOD (the literal target): per question, pick the option with the highest
     per-option TEXT log-likelihood. [base model + per-option log-likelihood]
 
 Goal: show whether the literal likelihood eval captures the (binary) W2S training
@@ -166,7 +166,7 @@ def main() -> None:
         d = method_summary[m]["discrimination_acc"]
         l = method_summary[m]["likelihood_acc_norm"]
         print(f"{m:16} {d['mean']:>8.3f}±{d['std']:.3f} {l['mean']:>9.3f}±{l['std']:.3f}")
-    print(f"\nweak train acc={weak_train_acc:.3f}  (DISC=accuracy_3class / LIK=John's per-option likelihood)")
+    print(f"\nweak train acc={weak_train_acc:.3f}  (DISC=accuracy_3class / LIK=per-option likelihood)")
     print(f"summary -> {out / 'summary.json'}")
 
 

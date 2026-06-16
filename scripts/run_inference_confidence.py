@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run weak/strong inference and save weak confidence scores.
 
-This is the first engineering step requested by John on 2026-05-13.
+This is the first engineering step requested on 2026-05-13.
 
 Two modes are supported:
 - seqcls: use Hugging Face sequence-classification models. This is best for a
@@ -10,7 +10,7 @@ Two modes are supported:
   continuations. This is closer to paper-style LLM inference on BoolQ, but is
   only a first-pass proxy unless the models are fine-tuned for the task.
 
-Confidence follows the binary version used in Changho's overlap code:
+Confidence follows the binary version used in the reference overlap code:
     confidence = 2 * abs(P(label=1) - 0.5)
 This maps uncertain predictions near 0.5 to 0 and confident predictions near
 0 or 1 to 1.
@@ -69,7 +69,7 @@ def resolve_dtype(dtype_arg: str):
     }[dtype_arg]
 
 
-def changho_binary_confidence(prob_label1: np.ndarray) -> np.ndarray:
+def binary_confidence(prob_label1: np.ndarray) -> np.ndarray:
     return 2.0 * np.abs(prob_label1 - 0.5)
 
 
@@ -162,7 +162,7 @@ def run_sequence_classifier(
         "prob_label1": prob_label1_all,
         "pred": np.concatenate(pred_parts).astype(int),
         "max_prob": np.concatenate(max_prob_parts),
-        "confidence": changho_binary_confidence(prob_label1_all),
+        "confidence": binary_confidence(prob_label1_all),
     }
 
 
@@ -225,7 +225,7 @@ def run_causal_lm_yesno(
         "prob_label1": prob_label1_all,
         "pred": pred,
         "max_prob": np.maximum(prob_label1_all, 1.0 - prob_label1_all),
-        "confidence": changho_binary_confidence(prob_label1_all),
+        "confidence": binary_confidence(prob_label1_all),
     }
 
 

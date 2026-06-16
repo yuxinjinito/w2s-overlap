@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Tiny LoRA fine-tuning smoke test for John todo #2.
+# Tiny LoRA fine-tuning smoke test.
 #
 # This only checks whether a 4B/8B-scale strong model can complete a few
 # parameter-efficient training steps on the current GPU. It is not intended as a

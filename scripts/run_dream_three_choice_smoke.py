@@ -637,7 +637,7 @@ def main() -> None:
         },
         "paper_alignment_audit": {
             "matches_original_binary_candidate_correctness": False,
-            "reason_for_change": "John/Fred asked about moving beyond binary candidate-correctness toward true 3-choice/open-ended formats.",
+            "reason_for_change": "we explored moving beyond binary candidate-correctness toward true 3-choice/open-ended formats.",
             "uses_lora": False,
             "uses_generation_scoring": True,
             "uses_activation_probe": True,

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Native multiple-choice weak-to-strong pipeline (DREAM).
 
-Generative causal-LM path: base model + per-option log-likelihood (John's
+Generative causal-LM path: base model + per-option log-likelihood (the
 2026-06-09 eval decision), extended to a full RETRAIN so the per-option
 likelihood is measured on a model actually trained for it.
 

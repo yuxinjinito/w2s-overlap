@@ -2,7 +2,7 @@
 """Paper-style Dream residual filtering for W2S linear probes.
 
 This is the follow-up to `run_dream_paper_linear_probe.py`. It keeps the
-paper-style Dream setup, but adds John's residual-filtering question:
+paper-style Dream setup, but adds the residual-filtering question:
 
 - fit a weak-to-strong representation map on weak_train examples;
 - score residuals on strong_train examples;
@@ -669,7 +669,7 @@ def main() -> None:
             "matches_original_logistic_probe": True,
             "uses_linear_probe_not_lora": True,
             "extension_beyond_figure_a1": (
-                "Residual-middle filtering and random balanced controls are John-directed "
+                "Residual-middle filtering and random balanced controls are targeted "
                 "selection diagnostics. They are not part of the original Figure A1 baseline."
             ),
         },
