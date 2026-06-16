@@ -75,13 +75,15 @@ def main() -> None:
     print(f"=== {root}  (filter seeds: {len(seeds)}) ===")
     print(f"data generator: {weak_model}   ->   fine-tuned: {strong_model}")
     print(f"anchors:  weak {weak}   base {base}   GT {gt}")
-    print(f"{'method':30} {'size':>5} {'tr_acc':>7} {'eval_acc3 (mean+/-std)':>23} {'vs base':>8}")
+    have_pgr = weak is not None and gt is not None and gt != weak
+    print(f"{'method':30} {'size':>5} {'tr_acc':>7} {'eval_acc3 (mean+/-std)':>23} {'vs base':>8} {'PGR':>7}")
     rows = [(st.mean(v), m, (st.stdev(v) if len(v) > 1 else 0.0), len(v)) for m, v in agg.items()]
     for mean, m, sd, n in sorted(rows, reverse=True):
         sz, ta = meta.get(m, (None, None))
         ta_s = f"{ta:.3f}" if ta is not None else "  -  "
         db = f"{mean - base:+.3f}" if base is not None else "  -  "
-        print(f"{m:30} {str(sz):>5} {ta_s:>7} {mean:>11.3f} +/-{sd:.3f} (n={n})   {db}")
+        pgr = f"{(mean - weak) / (gt - weak):+.2f}" if have_pgr else "  -  "
+        print(f"{m:30} {str(sz):>5} {ta_s:>7} {mean:>11.3f} +/-{sd:.3f} (n={n})   {db}  {pgr}")
 
 
 if __name__ == "__main__":

@@ -158,12 +158,15 @@ def format_dream_paper_style(ex: dict[str, Any], rng: random.Random) -> dict[str
 
     joined = "\n".join(ex["dialogue"]) if isinstance(ex["dialogue"], list) else flatten_text(ex["dialogue"])
     txt = f"{joined}\n\nQ: {ex['question']} A: {ans}"
+    choices = list(ex["choice"])
     return {
         "id": hashlib.sha1(txt.encode()).hexdigest()[:8],
         "source_id": ex["source_id"],
         "txt": txt,
         "labels": hard_label,
         "gt_labels": hard_label,
+        "mc_options": [f"{joined}\n\nQ: {ex['question']} A: {c}" for c in choices],
+        "mc_correct": choices.index(ex["answer"]),
     }
 
 

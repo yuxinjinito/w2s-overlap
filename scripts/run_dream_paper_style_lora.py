@@ -55,7 +55,7 @@ from run_dream_w2s_baselines import (
     write_predictions,
 )
 from representation_projection import representation_projection_scores
-from excess_loss import excess_loss_scores
+from excess_loss import excess_loss_kway_scores
 
 
 @dataclass
@@ -264,8 +264,6 @@ def requested_runs(args: argparse.Namespace) -> list[str]:
             "rp_low_balanced_f",
             "el_high_balanced_f",
             "el_low_balanced_f",
-            "el_nll_high_balanced_f",
-            "el_nll_low_balanced_f",
             "random_balanced_f",
         ):
             if name.startswith(pref) and name[len(pref):].isdigit():
@@ -314,12 +312,15 @@ def format_sciq_paper_style(ex: dict, row_id: int, rng: random.Random, use_suppo
     else:
         support_block = ""
     txt = f"{support_block}Q: {ex['question']} A: {ans}"
+    options = [ex["correct_answer"], ex["distractor1"], ex["distractor2"], ex["distractor3"]]
     return {
         "id": f"sciq-{row_id}",
         "source_id": f"sciq-{row_id}",
         "txt": txt,
         "labels": hard_label,
         "gt_labels": hard_label,
+        "mc_options": [f"{support_block}Q: {ex['question']} A: {o}" for o in options],
+        "mc_correct": 0,
     }
 
 
@@ -418,6 +419,8 @@ def format_hellaswag_paper_style(ex: dict, row_id: int, rng: random.Random) -> d
         "txt": txt,
         "labels": hard_label,
         "gt_labels": hard_label,
+        "mc_options": [f"{ctx} {e}".strip() for e in endings],
+        "mc_correct": correct,
     }
 
 
@@ -591,6 +594,13 @@ def format_anli_paper_style(ex: dict, row_id: int, rng: random.Random) -> dict:
         "txt": txt,
         "labels": hard_label,
         "gt_labels": hard_label,
+        "mc_options": [
+            f"Premise: {ex['premise']}\n"
+            f"Hypothesis: {ex['hypothesis']}\n"
+            f"Q: What is the relationship from the premise to the hypothesis? A: {ANLI_LABELS[k]}"
+            for k in (0, 1, 2)
+        ],
+        "mc_correct": gold,
     }
 
 
@@ -1475,6 +1485,75 @@ def write_text_report(path: Path, summary: dict) -> None:
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def _load_causal_lm_for_scoring(model_name: str, args: argparse.Namespace, device):
+    """Load an arbitrary model name as a causal LM + tokenizer for yes/no scoring."""
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from run_dream_w2s_baselines import resolve_dtype
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name, torch_dtype=resolve_dtype(args.torch_dtype), low_cpu_mem_usage=True
+    )
+    model.config.pad_token_id = tokenizer.pad_token_id
+    model.config.use_cache = False
+    model.to(device)
+    return model, tokenizer
+
+
+def compute_el_kway_scores(args: argparse.Namespace, strong_train_ds, device) -> np.ndarray:
+    """Excess-loss / learnability score per strong_train question (in row order):
+    H_weak(options) - H_strong(options), where each model's option distribution is the
+    softmax of its yes/no P(correct) over the K answer options. Loads the weak and the
+    untuned-strong model once each (no probe); independent of LoRA training, so computed
+    once per data seed and reused across train seeds and bands.
+    """
+    from run_dream_w2s_baselines import load_strong_model_and_tokenizer
+
+    if "mc_options" not in strong_train_ds.column_names:
+        raise SystemExit(
+            "el_* selectors need per-question options; this dataset's formatter does not "
+            "emit 'mc_options'. Add it to the format_* function before requesting el runs."
+        )
+    source_ids = list(strong_train_ds["source_id"])
+    mc_options = list(strong_train_ds["mc_options"])
+    opt_examples = [
+        LoraExample(
+            id=f"{src}::opt{k}",
+            source_id=src,
+            text=str(otext),
+            label=0,
+            answer_suffix=args.answer_suffix,
+        )
+        for src, opts in zip(source_ids, mc_options)
+        for k, otext in enumerate(opts)
+    ]
+    el_batch = max(int(getattr(args, "strong_batch_size", 1)), 8)
+
+    def _option_probs_by_q(model, tokenizer, desc):
+        _, rows = evaluate_yes_no(
+            model, tokenizer, opt_examples, el_batch, device, args.max_length, desc
+        )
+        by_q: dict[str, list[float]] = {}
+        for ex, row in zip(opt_examples, rows):
+            by_q.setdefault(ex.source_id, []).append(float(row["prob_label1"]))
+        return by_q
+
+    weak_model, weak_tok = _load_causal_lm_for_scoring(args.weak_model, args, device)
+    weak_by_q = _option_probs_by_q(weak_model, weak_tok, "el K-option (weak)")
+    del weak_model
+    clear_memory()
+
+    strong_model, strong_tok = load_strong_model_and_tokenizer(args, trainable_lora=False)
+    strong_by_q = _option_probs_by_q(strong_model, strong_tok, "el K-option (base strong)")
+    del strong_model
+    clear_memory()
+
+    el_by_q = excess_loss_kway_scores(weak_by_q, strong_by_q)
+    return np.asarray([el_by_q.get(src, 0.0) for src in source_ids], dtype=np.float64)
+
+
 def main() -> None:
     args = parse_args()
     runs = requested_runs(args)
@@ -1592,24 +1671,15 @@ def main() -> None:
         reg=args.rp_reg,
         n_components=(args.rp_components or None),
     )
-    # Untuned-strong correctness predictor: a linear probe on the BASE strong
-    # representations, mirroring the weak labeler (a probe on weak reps). Gives
-    # P_strong(label=1) on strong_train for the excess-loss / learnability score
-    # loss_weak(x) - loss_untuned_strong(x).
-    strong_probe = fit_probe(
-        strong_acts["weak_train"],
-        torch.tensor(weak_train_labels, dtype=torch.float32),
-        args.l2_penalty,
-        args.max_iter,
-        device,
-    )
-    strong_probs_strong = predict_probe(strong_probe, strong_acts["strong_train"], device)
-    el_ent_scores = excess_loss_scores(weak_probs_strong, strong_probs_strong, loss="entropy")
-    el_nll_scores = excess_loss_scores(
-        weak_probs_strong, strong_probs_strong, weak_preds_strong, loss="nll"
-    )
     del strong_acts
     clear_memory()
+    # excess-loss / learnability (K-way option entropy): H_weak(options) - H_strong(options),
+    # each model's yes/no head over the K options (no probe). Expensive (loads the weak +
+    # untuned-strong models once), so only when an el_* run is requested; independent of LoRA
+    # training -> computed once per data seed.
+    el_scores = None
+    if any(r.strip().startswith("el_") for r in args.runs.split(",")):
+        el_scores = compute_el_kway_scores(args, splits.strong_train, args.device)
 
     best_row = next(row for row in map_rows if row["name"] == best_map.name)
     middle_indices, middle_filter = middle_residual_indices(residuals, args.residual_keep_middle_frac)
@@ -1885,31 +1955,20 @@ def main() -> None:
             [strong_examples[int(i)] for i in rp_low_bal],
             [weak_labels[int(i)] for i in rp_low_bal],
         )
-        # excess-loss / learnability: loss_weak - loss_untuned_strong, entropy & nll flavors
-        el_high_idx, _ = score_band_indices(el_ent_scores, frac, "high")
-        el_high_bal = hard_weak_label_balance(el_high_idx, weak_preds_strong, args.seed + 17000 + fi)
-        run_subsets[f"el_high_balanced_f{pct}"] = (
-            [strong_examples[int(i)] for i in el_high_bal],
-            [weak_labels[int(i)] for i in el_high_bal],
-        )
-        el_low_idx, _ = score_band_indices(el_ent_scores, frac, "low")
-        el_low_bal = hard_weak_label_balance(el_low_idx, weak_preds_strong, args.seed + 17500 + fi)
-        run_subsets[f"el_low_balanced_f{pct}"] = (
-            [strong_examples[int(i)] for i in el_low_bal],
-            [weak_labels[int(i)] for i in el_low_bal],
-        )
-        el_nll_high_idx, _ = score_band_indices(el_nll_scores, frac, "high")
-        el_nll_high_bal = hard_weak_label_balance(el_nll_high_idx, weak_preds_strong, args.seed + 18000 + fi)
-        run_subsets[f"el_nll_high_balanced_f{pct}"] = (
-            [strong_examples[int(i)] for i in el_nll_high_bal],
-            [weak_labels[int(i)] for i in el_nll_high_bal],
-        )
-        el_nll_low_idx, _ = score_band_indices(el_nll_scores, frac, "low")
-        el_nll_low_bal = hard_weak_label_balance(el_nll_low_idx, weak_preds_strong, args.seed + 18500 + fi)
-        run_subsets[f"el_nll_low_balanced_f{pct}"] = (
-            [strong_examples[int(i)] for i in el_nll_low_bal],
-            [weak_labels[int(i)] for i in el_nll_low_bal],
-        )
+        # excess-loss / learnability (K-way option entropy): H_weak(options) - H_strong(options)
+        if el_scores is not None:
+            el_high_idx, _ = score_band_indices(el_scores, frac, "high")
+            el_high_bal = hard_weak_label_balance(el_high_idx, weak_preds_strong, args.seed + 17000 + fi)
+            run_subsets[f"el_high_balanced_f{pct}"] = (
+                [strong_examples[int(i)] for i in el_high_bal],
+                [weak_labels[int(i)] for i in el_high_bal],
+            )
+            el_low_idx, _ = score_band_indices(el_scores, frac, "low")
+            el_low_bal = hard_weak_label_balance(el_low_idx, weak_preds_strong, args.seed + 17500 + fi)
+            run_subsets[f"el_low_balanced_f{pct}"] = (
+                [strong_examples[int(i)] for i in el_low_bal],
+                [weak_labels[int(i)] for i in el_low_bal],
+            )
         knn_mixed_idx, _ = score_closest_indices(
             knn_stats["knn_correct_rate"], frac, args.knn_mixed_center, "mixed"
         )
