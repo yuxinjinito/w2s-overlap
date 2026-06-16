@@ -76,14 +76,16 @@ def main() -> None:
     print(f"data generator: {weak_model}   ->   fine-tuned: {strong_model}")
     print(f"anchors:  weak {weak}   base {base}   GT {gt}")
     have_pgr = weak is not None and gt is not None and gt != weak
-    print(f"{'method':30} {'size':>5} {'tr_acc':>7} {'eval_acc3 (mean+/-std)':>23} {'vs base':>8} {'PGR':>7}")
-    rows = [(st.mean(v), m, (st.stdev(v) if len(v) > 1 else 0.0), len(v)) for m, v in agg.items()]
-    for mean, m, sd, n in sorted(rows, reverse=True):
+    # sort + report by MEDIAN (robust to the occasional collapsed seed on small subsets);
+    # vs base and PGR are computed on the median too.
+    print(f"{'method':30} {'size':>5} {'tr_acc':>7} {'median':>7} {'mean+/-std (n)':>18} {'vs base':>8} {'PGR':>6}")
+    rows = [(st.median(v), st.mean(v), m, (st.stdev(v) if len(v) > 1 else 0.0), len(v)) for m, v in agg.items()]
+    for med, mean, m, sd, n in sorted(rows, reverse=True):
         sz, ta = meta.get(m, (None, None))
         ta_s = f"{ta:.3f}" if ta is not None else "  -  "
-        db = f"{mean - base:+.3f}" if base is not None else "  -  "
-        pgr = f"{(mean - weak) / (gt - weak):+.2f}" if have_pgr else "  -  "
-        print(f"{m:30} {str(sz):>5} {ta_s:>7} {mean:>11.3f} +/-{sd:.3f} (n={n})   {db}  {pgr}")
+        db = f"{med - base:+.3f}" if base is not None else "  -  "
+        pgr = f"{(med - weak) / (gt - weak):+.2f}" if have_pgr else "  -  "
+        print(f"{m:30} {str(sz):>5} {ta_s:>7} {med:>7.3f} {mean:>6.3f}+/-{sd:.3f}(n{n}) {db:>8} {pgr:>6}")
 
 
 if __name__ == "__main__":
