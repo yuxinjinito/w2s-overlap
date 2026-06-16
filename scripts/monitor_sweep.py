@@ -7,7 +7,7 @@ for the current seed and for all of them.
 
 Usage:
   python3 scripts/monitor_sweep.py results/hellaswag_bounds_epochs_0615 7
-  # on brandy (sh):  micromamba run -n w2s-overlap python scripts/monitor_sweep.py <root> 7
+  # POSIX sh (no conda init):  micromamba run -n <env> python scripts/monitor_sweep.py <root> 7
 """
 import glob
 import os
