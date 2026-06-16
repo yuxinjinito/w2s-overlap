@@ -59,9 +59,43 @@ def dream_questions(n: int, seed: int):
     return out
 
 
+ANLI_RELATIONS = ["entailment", "neutral", "contradiction"]
+
+
+def anli_questions(n: int, seed: int, anli_round: str = "r2"):
+    raw = load_dataset("facebook/anli", split=f"test_{anli_round}").shuffle(seed=seed)
+    out = []
+    for ex in raw:
+        gold = int(ex["label"])
+        if gold not in (0, 1, 2):
+            continue
+        ctx = (
+            f"Premise: {ex['premise']}\n"
+            f"Hypothesis: {ex['hypothesis']}\n"
+            "Q: What is the relationship from the premise to the hypothesis? A:"
+        )
+        out.append((ctx, list(ANLI_RELATIONS), gold))
+        if len(out) >= n:
+            break
+    return out
+
+
+def sciq_questions(n: int, seed: int):
+    raw = load_dataset("allenai/sciq", split="test").shuffle(seed=seed)
+    out = []
+    for ex in raw:
+        ctx = f"Q: {ex['question']} A:"
+        options = [ex["correct_answer"], ex["distractor1"], ex["distractor2"], ex["distractor3"]]
+        out.append((ctx, options, 0))
+        if len(out) >= n:
+            break
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset", default="hellaswag", choices=["hellaswag", "dream"])
+    ap.add_argument("--dataset", default="hellaswag", choices=["hellaswag", "dream", "anli", "sciq"])
+    ap.add_argument("--anli-round", default="r2", choices=["r1", "r2", "r3"])
     ap.add_argument("--model", default="meta-llama/Llama-3.1-8B")
     ap.add_argument("--n-questions", type=int, default=500)
     ap.add_argument("--seed", type=int, default=42)
@@ -71,7 +105,14 @@ def main() -> None:
     ap.add_argument("--answer-suffix", default=DEFAULT_SUFFIX)
     args = ap.parse_args()
 
-    qs = (hellaswag_questions if args.dataset == "hellaswag" else dream_questions)(args.n_questions, args.seed)
+    if args.dataset == "hellaswag":
+        qs = hellaswag_questions(args.n_questions, args.seed)
+    elif args.dataset == "dream":
+        qs = dream_questions(args.n_questions, args.seed)
+    elif args.dataset == "anli":
+        qs = anli_questions(args.n_questions, args.seed, args.anli_round)
+    else:  # sciq
+        qs = sciq_questions(args.n_questions, args.seed)
     print(f"dataset={args.dataset}  model={args.model}  questions={len(qs)}")
 
     tokenizer = AutoTokenizer.from_pretrained(args.model)
