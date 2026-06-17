@@ -55,7 +55,7 @@ from run_dream_w2s_baselines import (
     write_predictions,
 )
 from representation_projection import representation_projection_scores
-from excess_loss import excess_loss_kway_scores
+from excess_loss import excess_loss_kway_scores, option_entropy
 
 
 @dataclass
@@ -124,6 +124,12 @@ def parse_args() -> argparse.Namespace:
                         help="Kernel ridge reg for the representation-projection score (rp_high/rp_low).")
     parser.add_argument("--rp-components", type=int, default=0,
                         help="PCA components for the representation-projection score (0 = use all).")
+    parser.add_argument("--representation-layer", choices=["end", "middle"], default="end",
+                        help="Transformer layer whose final-token activations feed the kNN and RP "
+                             "selectors. 'end' (default) = last hidden layer. 'middle' = "
+                             "len(hidden_states)//2, a training control. The weak probe / confidence "
+                             "and the L2-residual maps always stay on the end layer so the weak "
+                             "labels are held fixed across the comparison.")
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--warmup-steps", type=int, default=0)
@@ -234,6 +240,8 @@ def requested_runs(args: argparse.Namespace) -> list[str]:
         "ground_truth",
         "weak_label",
         "weak_label_balanced",
+        "weak_correct_only",
+        "weak_correct_only_balanced",
         "curriculum_easy",
         "curriculum_hard",
         "middle_unbalanced",
@@ -269,6 +277,8 @@ def requested_runs(args: argparse.Namespace) -> list[str]:
             "rp_low_balanced_f",
             "el_high_balanced_f",
             "el_low_balanced_f",
+            "conf_entropy_high_balanced_f",
+            "conf_entropy_low_balanced_f",
             "random_balanced_f",
             "random_unbalanced_f",
         ):
@@ -858,6 +868,7 @@ def extract_all_activations(
     batch_size: int,
     max_length: int | None,
     desc: str,
+    layer: str | int = "end",
 ) -> dict[str, torch.Tensor]:
     sizes = {name: len(texts_by_split[name]) for name in ["weak_train", "strong_train", "test"]}
     all_texts = texts_by_split["weak_train"] + texts_by_split["strong_train"] + texts_by_split["test"]
@@ -869,6 +880,7 @@ def extract_all_activations(
         batch_size,
         max_length,
         desc,
+        layer=layer,
     )
     return slice_activations(acts, sizes)
 
@@ -1511,19 +1523,28 @@ def _load_causal_lm_for_scoring(model_name: str, args: argparse.Namespace, devic
     return model, tokenizer
 
 
-def compute_el_kway_scores(args: argparse.Namespace, strong_train_ds, device) -> np.ndarray:
+def compute_el_kway_scores(
+    args: argparse.Namespace, strong_train_ds, device
+) -> tuple[np.ndarray, np.ndarray]:
     """Excess-loss / learnability score per strong_train question (in row order):
     H_weak(options) - H_strong(options), where each model's option distribution is the
     softmax of its yes/no P(correct) over the K answer options. Loads the weak and the
     untuned-strong model once each (no probe); independent of LoRA training, so computed
     once per data seed and reused across train seeds and bands.
+
+    Returns (el_scores, weak_option_entropy): both row-aligned to strong_train. The weak
+    option entropy H_weak(options) is the single-model (weak-only) confidence the meeting
+    converged on -- low entropy = the weak teacher is sure which option is the answer.
+    el is exactly H_weak - H_strong, so this is el with the strong term set to 0; it backs
+    the conf_entropy_* selectors. Computed here to reuse the weak model pass.
     """
     from run_dream_w2s_baselines import load_strong_model_and_tokenizer
 
     if "mc_options" not in strong_train_ds.column_names:
         raise SystemExit(
-            "el_* selectors need per-question options; this dataset's formatter does not "
-            "emit 'mc_options'. Add it to the format_* function before requesting el runs."
+            "el_* / conf_entropy_* selectors need per-question options; this dataset's "
+            "formatter does not emit 'mc_options'. Add it to the format_* function before "
+            "requesting el or conf_entropy runs."
         )
     source_ids = list(strong_train_ds["source_id"])
     mc_options = list(strong_train_ds["mc_options"])
@@ -1560,7 +1581,12 @@ def compute_el_kway_scores(args: argparse.Namespace, strong_train_ds, device) ->
     clear_memory()
 
     el_by_q = excess_loss_kway_scores(weak_by_q, strong_by_q)
-    return np.asarray([el_by_q.get(src, 0.0) for src in source_ids], dtype=np.float64)
+    weak_entropy_by_q = {q: option_entropy(wp) for q, wp in weak_by_q.items()}
+    el_arr = np.asarray([el_by_q.get(src, 0.0) for src in source_ids], dtype=np.float64)
+    weak_entropy_arr = np.asarray(
+        [weak_entropy_by_q.get(src, 0.0) for src in source_ids], dtype=np.float64
+    )
+    return el_arr, weak_entropy_arr
 
 
 def main() -> None:
@@ -1667,19 +1693,41 @@ def main() -> None:
         device,
         output_dir,
     )
+    # kNN / RP may use a different activation layer as a control (--representation-layer).
+    # The weak probe/confidence and the L2-residual maps stay on the end layer (extracted
+    # above); only the kNN and RP representations move, so the weak labels are held fixed
+    # across the comparison. layer="end" reuses the already-extracted acts (no extra cost).
+    if args.representation_layer == "end":
+        rep_weak_acts, rep_strong_acts = weak_acts, strong_acts
+    else:
+        rep_weak_acts = extract_all_activations(
+            args.weak_model, texts, device, args.torch_dtype,
+            args.activation_batch_size, args.activation_max_length,
+            f"extract weak activations ({args.representation_layer})",
+            layer=args.representation_layer,
+        )
+        rep_strong_acts = extract_all_activations(
+            args.strong_model, texts, device, args.torch_dtype,
+            args.activation_batch_size, args.activation_max_length,
+            f"extract strong activations ({args.representation_layer})",
+            layer=args.representation_layer,
+        )
     knn_stats = compute_weak_train_knn_stats(
-        strong_acts["weak_train"],
-        strong_acts["strong_train"],
+        rep_strong_acts["weak_train"],
+        rep_strong_acts["strong_train"],
         weak_correct_weak_train,
         args.knn_k,
     )
     rp_scores = representation_projection_scores(
-        np.asarray(weak_acts["strong_train"], dtype=np.float64),
-        np.asarray(strong_acts["strong_train"], dtype=np.float64),
+        np.asarray(rep_weak_acts["strong_train"], dtype=np.float64),
+        np.asarray(rep_strong_acts["strong_train"], dtype=np.float64),
         weak_preds_strong,
         reg=args.rp_reg,
         n_components=(args.rp_components or None),
     )
+    if args.representation_layer != "end":
+        del rep_weak_acts, rep_strong_acts
+        clear_memory()
     del strong_acts
     clear_memory()
     # excess-loss / learnability (K-way option entropy): H_weak(options) - H_strong(options),
@@ -1687,8 +1735,11 @@ def main() -> None:
     # untuned-strong models once), so only when an el_* run is requested; independent of LoRA
     # training -> computed once per data seed.
     el_scores = None
-    if any(r.strip().startswith("el_") for r in args.runs.split(",")):
-        el_scores = compute_el_kway_scores(args, splits.strong_train, args.device)
+    weak_entropy_scores = None
+    if any(r.strip().startswith(("el_", "conf_entropy_")) for r in args.runs.split(",")):
+        el_scores, weak_entropy_scores = compute_el_kway_scores(
+            args, splits.strong_train, args.device
+        )
 
     best_row = next(row for row in map_rows if row["name"] == best_map.name)
     middle_indices, middle_filter = middle_residual_indices(residuals, args.residual_keep_middle_frac)
@@ -1835,6 +1886,16 @@ def main() -> None:
     weak_label_balanced_indices = hard_weak_label_balance(
         np.arange(len(weak_preds_strong)), weak_preds_strong, args.seed + 500
     )
+    # Filter only correct weak points: the oracle / best-case label-noise
+    # filter -- keep only the strong_train examples whose weak label already equals gold. On
+    # this subset the weak labels are noise-free, so it upper-bounds what any noise-removing
+    # selector (confidence / kNN / rp / el) could buy. If it barely beats base, label noise is
+    # not the bottleneck (recall / format is). Uses gold only to SELECT; the labels trained on
+    # are still the weak ones (which equal gold here by construction).
+    weak_correct_indices = np.where(weak_preds_strong == strong_train_labels)[0]
+    weak_correct_balanced_indices = hard_weak_label_balance(
+        weak_correct_indices, weak_preds_strong, args.seed + 600
+    )
     # Curriculum: same full no-filter set as weak_label, trained in a fixed order by weak
     # confidence (easy = most-confident first, hard = least-confident first). Control is
     # weak_label (random order); see train_lora_model's curriculum_order.
@@ -1848,6 +1909,14 @@ def main() -> None:
         "weak_label_balanced": (
             [strong_examples[int(i)] for i in weak_label_balanced_indices],
             [weak_labels[int(i)] for i in weak_label_balanced_indices],
+        ),
+        "weak_correct_only": (
+            [strong_examples[int(i)] for i in weak_correct_indices],
+            [weak_labels[int(i)] for i in weak_correct_indices],
+        ),
+        "weak_correct_only_balanced": (
+            [strong_examples[int(i)] for i in weak_correct_balanced_indices],
+            [weak_labels[int(i)] for i in weak_correct_balanced_indices],
         ),
         "curriculum_easy": (strong_examples, weak_labels),
         "curriculum_hard": (strong_examples, weak_labels),
@@ -2004,6 +2073,24 @@ def main() -> None:
             run_subsets[f"el_low_balanced_f{pct}"] = (
                 [strong_examples[int(i)] for i in el_low_bal],
                 [weak_labels[int(i)] for i in el_low_bal],
+            )
+        # confidence as K-way option entropy (weak-only = el with the strong term set to 0).
+        # High confidence = LOW entropy, so we negate before banding to match the existing
+        # weak_confidences_strong convention (high score = confident). conf_entropy_high keeps
+        # the low-entropy / high-confidence questions; conf_entropy_low keeps the uncertain ones.
+        if weak_entropy_scores is not None:
+            weak_conf_entropy = -weak_entropy_scores
+            ce_high_idx, _ = score_band_indices(weak_conf_entropy, frac, "high")
+            ce_high_bal = hard_weak_label_balance(ce_high_idx, weak_preds_strong, args.seed + 18000 + fi)
+            run_subsets[f"conf_entropy_high_balanced_f{pct}"] = (
+                [strong_examples[int(i)] for i in ce_high_bal],
+                [weak_labels[int(i)] for i in ce_high_bal],
+            )
+            ce_low_idx, _ = score_band_indices(weak_conf_entropy, frac, "low")
+            ce_low_bal = hard_weak_label_balance(ce_low_idx, weak_preds_strong, args.seed + 18500 + fi)
+            run_subsets[f"conf_entropy_low_balanced_f{pct}"] = (
+                [strong_examples[int(i)] for i in ce_low_bal],
+                [weak_labels[int(i)] for i in ce_low_bal],
             )
         knn_mixed_idx, _ = score_closest_indices(
             knn_stats["knn_correct_rate"], frac, args.knn_mixed_center, "mixed"
@@ -2258,7 +2345,8 @@ def main() -> None:
             "k": args.knn_k,
             "reference_split": "weak_train",
             "query_split": "strong_train",
-            "embedding": "strong model final-layer final-token activations",
+            "embedding": "strong model final-token activations",
+            "activation_layer": args.representation_layer,
             "distance": "cosine similarity",
             "middle": knn_middle_filter,
             "mixed": knn_mixed_filter,

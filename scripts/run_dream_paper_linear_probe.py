@@ -267,7 +267,14 @@ def extract_final_token_activations(
     batch_size: int,
     max_length: int | None,
     desc: str,
+    layer: str | int = "end",
 ) -> torch.Tensor:
+    """Final-token hidden state at the requested transformer layer.
+
+    layer: "end" (last hidden layer -- the default the weak probe uses), "middle"
+    (len(hidden_states)//2; the representation methods kNN/RP can use this as a
+    control), or an explicit integer index into ``outputs.hidden_states``.
+    """
     dtype = resolve_dtype(dtype_arg)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     if tokenizer.pad_token_id is None:
@@ -297,7 +304,14 @@ def extract_final_token_activations(
             tokenize_kwargs["max_length"] = max_length
         inputs = tokenizer(batch_texts, **tokenize_kwargs).to(device)
         outputs = model(**inputs, output_hidden_states=True)
-        last_hidden = outputs.hidden_states[-1]
+        hidden = outputs.hidden_states
+        if layer == "end":
+            layer_idx = len(hidden) - 1
+        elif layer == "middle":
+            layer_idx = len(hidden) // 2
+        else:
+            layer_idx = int(layer)
+        last_hidden = hidden[layer_idx]
         last_indices = inputs["attention_mask"].sum(dim=1) - 1
         batch_indices = torch.arange(last_hidden.shape[0], device=device)
         activations.append(last_hidden[batch_indices, last_indices].detach().to(torch.float32).cpu())

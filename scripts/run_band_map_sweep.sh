@@ -3,17 +3,22 @@ set -euo pipefail
 
 # Band-map sweep (multi-seed, overnight).
 #
-# For BOTH selection signals -- weak-model confidence and kNN neighbor-correct-rate
-# -- keep the HIGH / LOW / overlap(MIXED) band at 20% and 50% kept, each against a
-# SIZE-MATCHED random_balanced, plus the full weak_label anchor. All balanced,
-# cross-fitted reference labels.
+# One comparison set across all selection signals at 50% kept (balanced, cross-fitted):
+#   - confidence (weak binary |p-0.5|), conf_entropy (weak K-way option entropy),
+#     excess-loss el (H_weak - H_strong), kNN neighbor-correct-rate, rp (representation
+#     projection), L2-residual middle -- each HIGH/LOW (+ knn MIXED) band;
+#   - controls: weak_label (no-filter), weak_label_balanced, random_balanced/unbalanced;
+#   - curriculum_easy/hard (ordering, not filtering);
+#   - weak_correct_only(+balanced) = the ORACLE "filter only correct weak points" ceiling.
+# base / ground_truth are run once via BASELINE_RUNS in the inner sweep.
 #
-# Characterizes easy / overlap / hard for the strong model: which BAND of which
-# SIGNAL (if any) beats matched random, and at which fraction. Robust metrics
-# (AUROC, prior-matched accuracy, PGR) via scripts/compute_pgr.py.
+# Which BAND of which SIGNAL (if any) beats matched random, and the noise ceiling.
+# Robust metrics (AUROC, prior-matched accuracy, PGR) via scripts/compute_pgr.py.
+# Weak/strong default to the same-family Qwen2.5 pair (run_dream_paper_style_lora.sh).
 #
-# 13 runs/seed. Defaults to 8 LoRA seeds (~8-9h on the shared GPU). Quick look:
+# 19 filter runs/seed. Defaults to 8 LoRA seeds. Quick look:
 #   TRAIN_SEEDS=42 bash scripts/run_band_map_sweep.sh
+#   DATASET=anli ANLI_ROUND=r2 TRAIN_SEEDS=42 bash scripts/run_band_map_sweep.sh
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -33,9 +38,10 @@ export COMMITTEE_KEEP_FRACS="${COMMITTEE_KEEP_FRACS:-0.2,0.5}"
 # MAX_TRAIN_STEPS cap. Leave 0 to keep the old compute-matched behaviour.
 export EPOCHS="${EPOCHS:-0}"
 
-# {confidence, knn} x {high, low} + knn_mixed(overlap) at 20% & 50%, each with a
-# size-matched random_balanced, plus the full weak_label anchor.
-export FILTER_RUNS="${FILTER_RUNS:-confidence_high_balanced_f20,confidence_low_balanced_f20,knn_high_balanced_f20,knn_low_balanced_f20,knn_mixed_balanced_f20,random_balanced_f20,confidence_high_balanced_f50,confidence_low_balanced_f50,knn_high_balanced_f50,knn_low_balanced_f50,knn_mixed_balanced_f50,random_balanced_f50,weak_label}"
+# All selection signals' HIGH/LOW bands (+ knn MIXED) at 50% kept, size-matched random,
+# curriculum ordering, and the weak_correct_only oracle ceiling. el_* / conf_entropy_* load
+# the weak + untuned-strong models once (needs the dataset formatter to emit mc_options).
+export FILTER_RUNS="${FILTER_RUNS:-weak_label,weak_label_balanced,weak_correct_only,weak_correct_only_balanced,curriculum_easy,curriculum_hard,confidence_high_balanced_f50,conf_entropy_high_balanced_f50,conf_entropy_low_balanced_f50,el_high_balanced_f50,el_low_balanced_f50,knn_high_balanced_f50,knn_mixed_balanced_f50,knn_low_balanced_f50,rp_high_balanced_f50,rp_low_balanced_f50,middle_balanced,random_balanced_f50,random_unbalanced_f50}"
 
 echo "=== Band-map sweep (${DATASET}, cross-fit) ==="
 echo "OUTPUT_ROOT=${OUTPUT_ROOT}"

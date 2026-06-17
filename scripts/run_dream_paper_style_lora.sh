@@ -45,8 +45,15 @@ if [[ "$DISABLE_RUN_LOCK" != "1" ]]; then
   fi
 fi
 
-WEAK_MODEL="${WEAK_MODEL:-Qwen/Qwen1.5-0.5B}"
-STRONG_MODEL="${STRONG_MODEL:-meta-llama/Llama-3.1-8B}"
+# Weak and strong should share a FAMILY / TOKENIZER: the excess-loss and conf_entropy
+# selectors compare the two models' per-option distributions, which is only clean when the
+# vocab is identical (the requirement is same family / same tokenizer, not Llama specifically).
+# Default pair: Qwen2.5-0.5B (weak) -> Qwen2.5-7B (strong); all Qwen2.5 sizes share one
+# tokenizer, both base (not -Instruct). For a Llama pair instead:
+# WEAK_MODEL=meta-llama/Llama-3.2-1B STRONG_MODEL=meta-llama/Llama-3.1-8B.
+# (Earlier sweeps used Qwen1.5-0.5B -> Llama-3.1-8B, a cross-family/cross-tokenizer pair.)
+WEAK_MODEL="${WEAK_MODEL:-Qwen/Qwen2.5-0.5B}"
+STRONG_MODEL="${STRONG_MODEL:-Qwen/Qwen2.5-7B}"
 DATASET="${DATASET:-dream}"
 OUTPUT_DIR="${OUTPUT_DIR:-results/dream_paper_style_lora/dream_seed42}"
 
@@ -103,6 +110,8 @@ LR="${LR:-2e-4}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-0.0}"
 WARMUP_STEPS="${WARMUP_STEPS:-0}"
 LR_DECAY="${LR_DECAY:-linear}"
+# Activation layer for the kNN / RP selectors: "end" (default) or "middle" (control).
+REPRESENTATION_LAYER="${REPRESENTATION_LAYER:-end}"
 MAX_GRAD_NORM="${MAX_GRAD_NORM:-0.0}"
 LORA_R="${LORA_R:-8}"
 LORA_ALPHA="${LORA_ALPHA:-16}"
@@ -214,6 +223,7 @@ python3 scripts/run_dream_paper_style_lora.py \
   --weight-decay "$WEIGHT_DECAY" \
   --warmup-steps "$WARMUP_STEPS" \
   --lr-decay "$LR_DECAY" \
+  --representation-layer "$REPRESENTATION_LAYER" \
   --max-grad-norm "$MAX_GRAD_NORM" \
   --lora-r "$LORA_R" \
   --lora-alpha "$LORA_ALPHA" \
