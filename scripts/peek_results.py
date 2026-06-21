@@ -57,8 +57,21 @@ def main() -> None:
     weak_model = sys.argv[2] if len(sys.argv) > 2 else None
     strong_model = sys.argv[3] if len(sys.argv) > 3 else None
 
+    baseline_files = glob.glob(os.path.join(root, "*baseline*", "summary.json"))
+    seeds = sorted(
+        glob.glob(os.path.join(root, "filtering", "trainseed_*", "summary.json")),
+        key=os.path.getmtime,
+    )
+    # Fallback for a DIRECT (non-sweep) run: it writes one flat summary.json at the root that
+    # holds base/ground_truth/weak + every run together. Use it as both the baseline and the
+    # single "seed" when the sweep layout (baseline_seed42/ + filtering/trainseed_*/) is absent.
+    flat = os.path.join(root, "summary.json")
+    if not baseline_files and not seeds and os.path.exists(flat):
+        baseline_files = [flat]
+        seeds = [flat]
+
     base = gt = weak = None
-    for f in glob.glob(os.path.join(root, "*baseline*", "summary.json")):
+    for f in baseline_files:
         d = json.load(open(f))
         runs = d.get("runs", {})
         if "base" in runs:
@@ -70,11 +83,6 @@ def main() -> None:
             weak_model = d.get("weak_model")
         if strong_model is None:
             strong_model = d.get("strong_model")
-
-    seeds = sorted(
-        glob.glob(os.path.join(root, "filtering", "trainseed_*", "summary.json")),
-        key=os.path.getmtime,
-    )
     agg, meta = {}, {}
     for f in seeds:
         d = json.load(open(f))
