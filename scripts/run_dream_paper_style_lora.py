@@ -124,6 +124,10 @@ def parse_args() -> argparse.Namespace:
                         help="Kernel ridge reg for the representation-projection score (rp_high/rp_low).")
     parser.add_argument("--rp-components", type=int, default=0,
                         help="PCA components for the representation-projection score (0 = use all).")
+    parser.add_argument("--weight-temperature", type=float, default=1.0,
+                        help="Temperature for the continuous-weighting runs (rp_weighted / el_weighted / "
+                             "conf_weighted): each example's loss is weighted by softmax(score/T), rescaled "
+                             "to mean 1. T->inf == no-filter (uniform), T->0 == hard top-selection.")
     parser.add_argument("--representation-layer", choices=["end", "middle"], default="end",
                         help="Transformer layer whose final-token activations feed the kNN and RP "
                              "selectors. 'end' (default) = last hidden layer. 'middle' = "
@@ -242,6 +246,9 @@ def requested_runs(args: argparse.Namespace) -> list[str]:
         "weak_label_balanced",
         "weak_correct_only",
         "weak_correct_only_balanced",
+        "rp_weighted",
+        "el_weighted",
+        "conf_weighted",
         "curriculum_easy",
         "curriculum_hard",
         "middle_unbalanced",
@@ -1004,6 +1011,24 @@ def weak_label_balance(
     return [examples[int(i)] for i in selected], [int(labels[int(i)]) for i in selected], selected
 
 
+def scores_to_weights(scores: np.ndarray, temperature: float) -> np.ndarray:
+    """Continuous per-example loss weights from a selection score (loss-adaptation).
+
+    z-score the scores, divide by the temperature, softmax over the dataset, then rescale to
+    mean 1 (sum N) so the loss magnitude / effective data size is preserved. temperature -> inf
+    gives uniform weights (== no-filter); temperature -> 0 concentrates the weight on the
+    top-scoring examples (== hard top-selection). So one knob interpolates between the two,
+    the smooth counterpart of the 0/1 *_high band.
+    """
+    s = np.asarray(scores, dtype=np.float64).ravel()
+    sd = s.std()
+    z = (s - s.mean()) / (sd if sd > 1e-8 else 1.0)
+    z = z / max(float(temperature), 1e-6)
+    z = z - z.max()
+    w = np.exp(z)
+    return w * (len(w) / w.sum())
+
+
 def score_band_indices(scores: np.ndarray, keep_frac: float, mode: str) -> tuple[np.ndarray, dict[str, float | str]]:
     if not 0.0 < keep_frac <= 1.0:
         raise ValueError("keep_frac must be in (0, 1].")
@@ -1354,6 +1379,7 @@ def run_lora_eval(
     output_dir: Path,
     eval3_examples: list[LoraExample] | None = None,
     curriculum_order=None,
+    sample_weights=None,
 ) -> tuple[dict, list[dict]]:
     if args.train_seed is not None:
         torch.manual_seed(args.train_seed)
@@ -1362,7 +1388,8 @@ def run_lora_eval(
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(args.train_seed)
     model, tokenizer, report = train_lora_model(
-        args, train_examples, train_labels, run_name, output_dir, curriculum_order=curriculum_order
+        args, train_examples, train_labels, run_name, output_dir,
+        curriculum_order=curriculum_order, sample_weights=sample_weights,
     )
     eval_summary, rows = evaluate_yes_no(
         model,
@@ -1903,9 +1930,24 @@ def main() -> None:
         "curriculum_easy": list(np.argsort(-weak_confidences_strong)),
         "curriculum_hard": list(np.argsort(weak_confidences_strong)),
     }
+    # Continuous-weighting (loss-adaptation): the *_weighted runs train the FULL set but weight
+    # each example's loss by a selection score (temperature = args.weight_temperature; T->inf is
+    # no-filter, T->0 is hard top-selection). Smooth counterpart of the rp_high / el_high /
+    # confidence_high bands. rp_scores + weak_confidences_strong are always available; el_scores
+    # only when an el_* run is requested (el_weighted starts with "el_", so it triggers it).
+    wT = float(getattr(args, "weight_temperature", 1.0))
+    run_weights: dict[str, np.ndarray] = {
+        "rp_weighted": scores_to_weights(rp_scores, wT),
+        "conf_weighted": scores_to_weights(weak_confidences_strong, wT),
+    }
+    if el_scores is not None:
+        run_weights["el_weighted"] = scores_to_weights(el_scores, wT)
     run_subsets: dict[str, tuple[list[LoraExample], list[int]]] = {
         "ground_truth": (strong_examples, strong_train_labels.tolist()),
         "weak_label": (strong_examples, weak_labels),
+        "rp_weighted": (strong_examples, weak_labels),
+        "el_weighted": (strong_examples, weak_labels),
+        "conf_weighted": (strong_examples, weak_labels),
         "weak_label_balanced": (
             [strong_examples[int(i)] for i in weak_label_balanced_indices],
             [weak_labels[int(i)] for i in weak_label_balanced_indices],
@@ -2181,6 +2223,7 @@ def main() -> None:
         report, rows = run_lora_eval(
             args, run_name, train_examples, train_labels, eval_examples, output_dir, eval3_examples,
             curriculum_order=curriculum_orders.get(run_name),
+            sample_weights=run_weights.get(run_name),
         )
         prediction_columns[run_name] = rows
         run_reports[run_name] = report

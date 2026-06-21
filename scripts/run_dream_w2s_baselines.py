@@ -348,15 +348,21 @@ def pad_encoded_batch(tokenizer, encoded_rows: list[dict[str, list[int]]]) -> di
 
 
 class PromptAnswerDataset(torch.utils.data.Dataset):
-    def __init__(self, examples: list[Example], labels: list[int]):
+    def __init__(self, examples: list[Example], labels: list[int], weights=None):
         self.examples = examples
         self.labels = [int(label) for label in labels]
+        # Optional per-example loss weights (continuous-weighting / loss-adaptation). When
+        # None the item is a 2-tuple and behaves exactly as before (uniform weighting).
+        self.weights = None if weights is None else [float(w) for w in weights]
 
     def __len__(self) -> int:
         return len(self.examples)
 
-    def __getitem__(self, idx: int) -> tuple[str, str]:
-        return self.examples[idx].prompt, answer_text(self.labels[idx])
+    def __getitem__(self, idx: int):
+        prompt, answer = self.examples[idx].prompt, answer_text(self.labels[idx])
+        if self.weights is None:
+            return prompt, answer
+        return prompt, answer, self.weights[idx]
 
 
 class Collator:
@@ -364,12 +370,17 @@ class Collator:
         self.tokenizer = tokenizer
         self.max_length = max_length
 
-    def __call__(self, batch: list[tuple[str, str]]) -> dict[str, torch.Tensor]:
+    def __call__(self, batch) -> dict[str, torch.Tensor]:
         encoded_rows = [
-            encode_prompt_answer(self.tokenizer, prompt, answer, self.max_length)
-            for prompt, answer in batch
+            encode_prompt_answer(self.tokenizer, item[0], item[1], self.max_length)
+            for item in batch
         ]
-        return pad_encoded_batch(self.tokenizer, encoded_rows)
+        out = pad_encoded_batch(self.tokenizer, encoded_rows)
+        # Only carry per-sample weights when the dataset provides them (3-tuples). This keeps
+        # the native/PairDataset path (2-tuples) -- which calls model(**batch) -- untouched.
+        if len(batch[0]) > 2:
+            out["sample_weight"] = torch.tensor([item[2] for item in batch], dtype=torch.float32)
+        return out
 
 
 def load_strong_model_and_tokenizer(args: argparse.Namespace, trainable_lora: bool):
@@ -411,6 +422,24 @@ def count_params(model) -> tuple[int, int]:
     return total, trainable
 
 
+def weighted_token_ce(logits: torch.Tensor, labels: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
+    """Per-sample answer-token cross-entropy, averaged with per-sample weights.
+
+    Reproduces the model's built-in causal-LM loss (mean CE over the answer tokens, where
+    labels != -100) but at the SAMPLE level, then takes a weighted mean over the batch. With
+    all weights == 1 this equals the standard mean loss; non-uniform weights up/down-weight
+    each example's gradient -- the continuous-weighting / loss-adaptation knob.
+    """
+    logits = logits[:, :-1, :]
+    labels = labels[:, 1:]
+    logp = torch.log_softmax(logits.float(), dim=-1)
+    mask = labels != -100
+    safe = labels.clamp(min=0)
+    tok_ce = -logp.gather(-1, safe.unsqueeze(-1)).squeeze(-1) * mask
+    per_sample = tok_ce.sum(dim=1) / mask.sum(dim=1).clamp(min=1)
+    return (per_sample * weights).sum() / weights.sum().clamp(min=1e-8)
+
+
 def train_lora_model(
     args: argparse.Namespace,
     train_examples: list[Example],
@@ -418,6 +447,7 @@ def train_lora_model(
     run_name: str,
     output_dir: Path,
     curriculum_order=None,
+    sample_weights=None,
 ) -> tuple[object, object, dict]:
     start_time = time.time()
     if torch.cuda.is_available():
@@ -431,8 +461,10 @@ def train_lora_model(
     if curriculum_order is not None:
         train_examples = [train_examples[i] for i in curriculum_order]
         train_labels = [train_labels[i] for i in curriculum_order]
+        if sample_weights is not None:
+            sample_weights = [sample_weights[i] for i in curriculum_order]
     loader = DataLoader(
-        PromptAnswerDataset(train_examples, train_labels),
+        PromptAnswerDataset(train_examples, train_labels, sample_weights),
         batch_size=args.strong_batch_size,
         shuffle=(curriculum_order is None),
         collate_fn=Collator(tokenizer, args.max_length),
@@ -468,9 +500,18 @@ def train_lora_model(
         step_losses = []
         for _ in range(args.gradient_accumulation_steps):
             batch = next(data_iter)
+            weights = batch.pop("sample_weight", None)
             batch = {key: value.to(args.device) for key, value in batch.items()}
-            outputs = model(**batch)
-            loss = outputs.loss / args.gradient_accumulation_steps
+            if weights is None:
+                outputs = model(**batch)
+                loss = outputs.loss / args.gradient_accumulation_steps
+            else:
+                outputs = model(
+                    input_ids=batch["input_ids"], attention_mask=batch["attention_mask"], use_cache=False
+                )
+                loss = weighted_token_ce(
+                    outputs.logits, batch["labels"], weights.to(args.device)
+                ) / args.gradient_accumulation_steps
             loss.backward()
             step_losses.append(float(loss.detach().cpu().item() * args.gradient_accumulation_steps))
         max_grad_norm = float(getattr(args, "max_grad_norm", 0.0))
