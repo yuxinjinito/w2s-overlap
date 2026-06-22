@@ -268,12 +268,15 @@ def extract_final_token_activations(
     max_length: int | None,
     desc: str,
     layer: str | int = "end",
+    pooling: str = "last",
 ) -> torch.Tensor:
-    """Final-token hidden state at the requested transformer layer.
+    """Per-prompt hidden state at the requested transformer layer and token pooling.
 
     layer: "end" (last hidden layer -- the default the weak probe uses), "middle"
     (len(hidden_states)//2; the representation methods kNN/RP can use this as a
     control), or an explicit integer index into ``outputs.hidden_states``.
+    pooling: "last" (the final non-pad token -- the probe / W2S-paper lineage) or "mean"
+    (average over the non-pad tokens; kNN/RP can use this as a control).
     """
     dtype = resolve_dtype(dtype_arg)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -312,9 +315,14 @@ def extract_final_token_activations(
         else:
             layer_idx = int(layer)
         last_hidden = hidden[layer_idx]
-        last_indices = inputs["attention_mask"].sum(dim=1) - 1
-        batch_indices = torch.arange(last_hidden.shape[0], device=device)
-        activations.append(last_hidden[batch_indices, last_indices].detach().to(torch.float32).cpu())
+        if pooling == "mean":
+            mask = inputs["attention_mask"].unsqueeze(-1).to(last_hidden.dtype)
+            pooled = (last_hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1.0)
+        else:  # "last": the final non-pad token
+            last_indices = inputs["attention_mask"].sum(dim=1) - 1
+            batch_indices = torch.arange(last_hidden.shape[0], device=device)
+            pooled = last_hidden[batch_indices, last_indices]
+        activations.append(pooled.detach().to(torch.float32).cpu())
 
     del model
     del tokenizer

@@ -110,8 +110,9 @@ LR="${LR:-2e-4}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-0.0}"
 WARMUP_STEPS="${WARMUP_STEPS:-0}"
 LR_DECAY="${LR_DECAY:-linear}"
-# Activation layer for the kNN / RP selectors: "end" (default) or "middle" (control).
+# Activation layer + token pooling for the kNN / RP selectors (controls; probe stays end/last).
 REPRESENTATION_LAYER="${REPRESENTATION_LAYER:-end}"
+REPRESENTATION_POOLING="${REPRESENTATION_POOLING:-last}"
 # Temperature for the continuous-weighting runs (rp_weighted / el_weighted / conf_weighted).
 WEIGHT_TEMPERATURE="${WEIGHT_TEMPERATURE:-1.0}"
 MAX_GRAD_NORM="${MAX_GRAD_NORM:-0.0}"
@@ -229,6 +230,7 @@ python3 scripts/run_dream_paper_style_lora.py \
   --warmup-steps "$WARMUP_STEPS" \
   --lr-decay "$LR_DECAY" \
   --representation-layer "$REPRESENTATION_LAYER" \
+  --representation-pooling "$REPRESENTATION_POOLING" \
   --weight-temperature "$WEIGHT_TEMPERATURE" \
   --max-grad-norm "$MAX_GRAD_NORM" \
   --lora-r "$LORA_R" \

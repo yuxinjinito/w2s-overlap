@@ -139,6 +139,10 @@ def parse_args() -> argparse.Namespace:
                              "len(hidden_states)//2, a training control. The weak probe / confidence "
                              "and the L2-residual maps always stay on the end layer so the weak "
                              "labels are held fixed across the comparison.")
+    parser.add_argument("--representation-pooling", choices=["last", "mean"], default="last",
+                        help="Token pooling for the kNN/RP representations: 'last' (default) = the "
+                             "final non-pad token; 'mean' = average over the non-pad tokens (a "
+                             "control). The weak probe stays on last-token regardless.")
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--warmup-steps", type=int, default=0)
@@ -881,6 +885,7 @@ def extract_all_activations(
     max_length: int | None,
     desc: str,
     layer: str | int = "end",
+    pooling: str = "last",
 ) -> dict[str, torch.Tensor]:
     sizes = {name: len(texts_by_split[name]) for name in ["weak_train", "strong_train", "test"]}
     all_texts = texts_by_split["weak_train"] + texts_by_split["strong_train"] + texts_by_split["test"]
@@ -893,6 +898,7 @@ def extract_all_activations(
         max_length,
         desc,
         layer=layer,
+        pooling=pooling,
     )
     return slice_activations(acts, sizes)
 
@@ -1735,24 +1741,27 @@ def main() -> None:
         device,
         output_dir,
     )
-    # kNN / RP may use a different activation layer as a control (--representation-layer).
-    # The weak probe/confidence and the L2-residual maps stay on the end layer (extracted
-    # above); only the kNN and RP representations move, so the weak labels are held fixed
-    # across the comparison. layer="end" reuses the already-extracted acts (no extra cost).
-    if args.representation_layer == "end":
+    # kNN / RP may use a different activation LAYER (--representation-layer) and/or token
+    # POOLING (--representation-pooling) as a control. The weak probe/confidence and the
+    # L2-residual maps stay on the default end-layer / last-token reps (extracted above); only
+    # the kNN and RP representations move, so the weak labels are held fixed across the
+    # comparison. The default (end, last) reuses the already-extracted acts (no extra cost).
+    rep_is_default = args.representation_layer == "end" and args.representation_pooling == "last"
+    if rep_is_default:
         rep_weak_acts, rep_strong_acts = weak_acts, strong_acts
     else:
+        rep_tag = f"{args.representation_layer},{args.representation_pooling}"
         rep_weak_acts = extract_all_activations(
             args.weak_model, texts, device, args.torch_dtype,
             args.activation_batch_size, args.activation_max_length,
-            f"extract weak activations ({args.representation_layer})",
-            layer=args.representation_layer,
+            f"extract weak activations ({rep_tag})",
+            layer=args.representation_layer, pooling=args.representation_pooling,
         )
         rep_strong_acts = extract_all_activations(
             args.strong_model, texts, device, args.torch_dtype,
             args.activation_batch_size, args.activation_max_length,
-            f"extract strong activations ({args.representation_layer})",
-            layer=args.representation_layer,
+            f"extract strong activations ({rep_tag})",
+            layer=args.representation_layer, pooling=args.representation_pooling,
         )
     knn_stats = compute_weak_train_knn_stats(
         rep_strong_acts["weak_train"],
@@ -1767,7 +1776,7 @@ def main() -> None:
         reg=args.rp_reg,
         n_components=(args.rp_components or None),
     )
-    if args.representation_layer != "end":
+    if not rep_is_default:
         del rep_weak_acts, rep_strong_acts
         clear_memory()
     del strong_acts
@@ -2416,8 +2425,9 @@ def main() -> None:
             "k": args.knn_k,
             "reference_split": "weak_train",
             "query_split": "strong_train",
-            "embedding": "strong model final-token activations",
+            "embedding": "strong model activations",
             "activation_layer": args.representation_layer,
+            "activation_pooling": args.representation_pooling,
             "distance": "cosine similarity",
             "middle": knn_middle_filter,
             "mixed": knn_mixed_filter,
