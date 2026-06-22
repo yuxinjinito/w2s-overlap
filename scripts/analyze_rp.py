@@ -41,6 +41,9 @@ def main() -> None:
     res = np.array([float(r["residual_l2"]) for r in rows])
     has_knn = rows[0].get("knn_correct_rate", "") != ""
     knn = np.array([float(r["knn_correct_rate"]) for r in rows]) if has_knn else None
+    has_base = rows[0].get("base_confidence", "") != ""
+    bconf = np.array([float(r["base_confidence"]) for r in rows]) if has_base else None
+    bprob = np.array([float(r["base_prob_correct"]) for r in rows]) if has_base else None
     n = len(rp)
 
     print(f"n = {n} strong_train examples;  overall weak-label accuracy = {wc.mean():.3f}")
@@ -51,6 +54,9 @@ def main() -> None:
     print(f"  residual_l2 (L2-map score)       : {spearman(rp, res):+.3f}")
     if knn is not None:
         print(f"  knn_correct_rate                 : {spearman(rp, knn):+.3f}")
+    if has_base:
+        print(f"  base_prob_correct (strong base)  : {spearman(rp, bprob):+.3f}   <- positive => rp picks base-learnable points")
+        print(f"  base_confidence (strong base)    : {spearman(rp, bconf):+.3f}")
 
     k = n // 2
     rp_hi = set(np.argsort(-rp)[:k].tolist())
@@ -69,6 +75,9 @@ def main() -> None:
         print(f"\n== points rp_high keeps but confidence_high drops (n={len(only_rp)}) ==")
         print(f"  weak_correct (cleanliness)        : {wc[only_rp].mean():.3f}")
         print(f"  weak_confidence (low = uncertain) : {wconf[only_rp].mean():.3f}")
+        if has_base:
+            print(f"  base_prob_correct (these vs all)  : {bprob[only_rp].mean():.3f}  (all: {bprob.mean():.3f})"
+                  "  <- higher => rp's distinctive picks are base-learnable (overlap)")
         print("  (these are rp's distinctive picks -- the points confidence would have thrown out)")
 
 

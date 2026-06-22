@@ -161,6 +161,9 @@ fi
 if [[ "${EVAL_3CLASS:-0}" == "1" ]]; then
   EXTRA_ARGS+=(--eval-3class --n-eval-questions "${N_EVAL_QUESTIONS:-2041}")
 fi
+if [[ "${SCORE_BASE_ON_TRAIN:-0}" == "1" ]]; then
+  EXTRA_ARGS+=(--score-base-on-train)
+fi
 if [[ "$SAVE_ACTIVATIONS" == "1" ]]; then
   EXTRA_ARGS+=(--save-activations)
 fi

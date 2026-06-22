@@ -128,6 +128,11 @@ def parse_args() -> argparse.Namespace:
                         help="Temperature for the continuous-weighting runs (rp_weighted / el_weighted / "
                              "conf_weighted): each example's loss is weighted by softmax(score/T), rescaled "
                              "to mean 1. T->inf == no-filter (uniform), T->0 == hard top-selection.")
+    parser.add_argument("--score-base-on-train", action="store_true",
+                        help="Also score the untuned strong (base) model's yes/no P(correct) on each "
+                             "strong_train example and write it to strong_train_labels.csv "
+                             "(base_prob_correct / base_confidence). One extra base forward pass; used "
+                             "by analyze_rp.py to test whether rp selects strong-base-learnable points.")
     parser.add_argument("--representation-layer", choices=["end", "middle"], default="end",
                         help="Transformer layer whose final-token activations feed the kNN and RP "
                              "selectors. 'end' (default) = last hidden layer. 'middle' = "
@@ -1222,6 +1227,7 @@ def write_strong_train_labels(
     residuals: np.ndarray,
     knn_stats=None,
     rp_scores=None,
+    base_probs=None,
 ) -> None:
     weak_preds = (weak_probs >= 0.5).astype(int)
     ranks = np.empty_like(np.argsort(residuals))
@@ -1241,6 +1247,8 @@ def write_strong_train_labels(
                 "residual_l2",
                 "residual_rank",
                 "rp_score",
+                "base_prob_correct",
+                "base_confidence",
                 "knn_correct_count",
                 "knn_correct_rate",
                 "knn_neighbor_cosine_mean",
@@ -1263,6 +1271,10 @@ def write_strong_train_labels(
                     "residual_l2": float(residuals[idx]),
                     "residual_rank": int(ranks[idx]),
                     "rp_score": "" if rp_scores is None else float(rp_scores[idx]),
+                    "base_prob_correct": "" if base_probs is None else float(base_probs[idx]),
+                    "base_confidence": ""
+                    if base_probs is None
+                    else float(2.0 * abs(float(base_probs[idx]) - 0.5)),
                     "knn_correct_count": ""
                     if knn_stats is None
                     else int(knn_stats["knn_correct_count"][idx]),
@@ -2233,7 +2245,20 @@ def main() -> None:
     args.max_train_steps = fixed_steps
 
     write_predictions(output_dir / "eval_predictions.csv", eval_examples, prediction_columns, weak_eval_rows)
-    write_strong_train_labels(output_dir / "strong_train_labels.csv", strong_examples, weak_probs_strong, residuals, knn_stats, rp_scores=rp_scores)
+    # Optional: untuned-strong (base) yes/no P(correct) on each strong_train example, so analyze_rp
+    # can test whether rp selects points the strong BASE can already (nearly) learn (overlap).
+    base_train_probs = None
+    if getattr(args, "score_base_on_train", False):
+        from run_dream_w2s_baselines import load_strong_model_and_tokenizer
+        base_model, base_tok = load_strong_model_and_tokenizer(args, trainable_lora=False)
+        _, base_rows = evaluate_yes_no(
+            base_model, base_tok, lora_examples["strong_train"],
+            max(int(args.strong_batch_size), 8), device, args.max_length, "score base on strong_train",
+        )
+        base_train_probs = np.asarray([float(r["prob_label1"]) for r in base_rows], dtype=np.float64)
+        del base_model
+        clear_memory()
+    write_strong_train_labels(output_dir / "strong_train_labels.csv", strong_examples, weak_probs_strong, residuals, knn_stats, rp_scores=rp_scores, base_probs=base_train_probs)
     write_knn_diagnostics(
         output_dir / "knn_diagnostics.csv",
         strong_examples,
