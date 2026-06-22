@@ -1221,6 +1221,7 @@ def write_strong_train_labels(
     weak_probs: np.ndarray,
     residuals: np.ndarray,
     knn_stats=None,
+    rp_scores=None,
 ) -> None:
     weak_preds = (weak_probs >= 0.5).astype(int)
     ranks = np.empty_like(np.argsort(residuals))
@@ -1239,6 +1240,7 @@ def write_strong_train_labels(
                 "weak_correct",
                 "residual_l2",
                 "residual_rank",
+                "rp_score",
                 "knn_correct_count",
                 "knn_correct_rate",
                 "knn_neighbor_cosine_mean",
@@ -1260,6 +1262,7 @@ def write_strong_train_labels(
                     "weak_correct": int(weak_preds[idx] == ex.label),
                     "residual_l2": float(residuals[idx]),
                     "residual_rank": int(ranks[idx]),
+                    "rp_score": "" if rp_scores is None else float(rp_scores[idx]),
                     "knn_correct_count": ""
                     if knn_stats is None
                     else int(knn_stats["knn_correct_count"][idx]),
@@ -2230,7 +2233,7 @@ def main() -> None:
     args.max_train_steps = fixed_steps
 
     write_predictions(output_dir / "eval_predictions.csv", eval_examples, prediction_columns, weak_eval_rows)
-    write_strong_train_labels(output_dir / "strong_train_labels.csv", strong_examples, weak_probs_strong, residuals, knn_stats)
+    write_strong_train_labels(output_dir / "strong_train_labels.csv", strong_examples, weak_probs_strong, residuals, knn_stats, rp_scores=rp_scores)
     write_knn_diagnostics(
         output_dir / "knn_diagnostics.csv",
         strong_examples,
