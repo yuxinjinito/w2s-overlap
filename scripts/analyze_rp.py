@@ -41,9 +41,12 @@ def main() -> None:
     res = np.array([float(r["residual_l2"]) for r in rows])
     has_knn = rows[0].get("knn_correct_rate", "") != ""
     knn = np.array([float(r["knn_correct_rate"]) for r in rows]) if has_knn else None
+    label = np.array([int(r["label"]) for r in rows])
     has_base = rows[0].get("base_confidence", "") != ""
     bconf = np.array([float(r["base_confidence"]) for r in rows]) if has_base else None
     bprob = np.array([float(r["base_prob_correct"]) for r in rows]) if has_base else None
+    # base_correct = does the untuned base classify this (question, candidate) right
+    bcorr = ((bprob >= 0.5).astype(int) == label).astype(int) if has_base else None
     n = len(rp)
 
     print(f"n = {n} strong_train examples;  overall weak-label accuracy = {wc.mean():.3f}")
@@ -55,7 +58,8 @@ def main() -> None:
     if knn is not None:
         print(f"  knn_correct_rate                 : {spearman(rp, knn):+.3f}")
     if has_base:
-        print(f"  base_prob_correct (strong base)  : {spearman(rp, bprob):+.3f}   <- positive => rp picks base-learnable points")
+        print(f"  base_correct (base gets it right): {spearman(rp, bcorr):+.3f}   (overall base acc {bcorr.mean():.3f})")
+        print(f"  base_prob_correct (raw P)        : {spearman(rp, bprob):+.3f}")
         print(f"  base_confidence (strong base)    : {spearman(rp, bconf):+.3f}")
 
     k = n // 2
@@ -76,8 +80,8 @@ def main() -> None:
         print(f"  weak_correct (cleanliness)        : {wc[only_rp].mean():.3f}")
         print(f"  weak_confidence (low = uncertain) : {wconf[only_rp].mean():.3f}")
         if has_base:
-            print(f"  base_prob_correct (these vs all)  : {bprob[only_rp].mean():.3f}  (all: {bprob.mean():.3f})"
-                  "  <- higher => rp's distinctive picks are base-learnable (overlap)")
+            print(f"  base_correct (these vs all)       : {bcorr[only_rp].mean():.3f}  (all: {bcorr.mean():.3f})"
+                  "  <- higher => rp's distinctive picks are ones the base already gets right")
         print("  (these are rp's distinctive picks -- the points confidence would have thrown out)")
 
 
