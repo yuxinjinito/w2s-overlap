@@ -143,6 +143,13 @@ def parse_args() -> argparse.Namespace:
                         help="Token pooling for the kNN/RP representations: 'last' (default) = the "
                              "final non-pad token; 'mean' = average over the non-pad tokens (a "
                              "control). The weak probe stays on last-token regardless.")
+    parser.add_argument("--representation-span", choices=["full", "answer"], default="full",
+                        help="Which tokens of each prompt the kNN/RP representation pools over: "
+                             "'full' (default) = the whole prompt (question + answer); 'answer' = "
+                             "only the answer part 'A: {candidate}' (mask the question prefix and the "
+                             "yes/no instruction suffix) -- the answer-only ablation. Needs a fast "
+                             "tokenizer. The weak probe/confidence stay on the full prompt so the "
+                             "weak labels are held fixed across the comparison.")
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--warmup-steps", type=int, default=0)
@@ -886,6 +893,8 @@ def extract_all_activations(
     desc: str,
     layer: str | int = "end",
     pooling: str = "last",
+    answer_span: bool = False,
+    answer_suffix: str = "",
 ) -> dict[str, torch.Tensor]:
     sizes = {name: len(texts_by_split[name]) for name in ["weak_train", "strong_train", "test"]}
     all_texts = texts_by_split["weak_train"] + texts_by_split["strong_train"] + texts_by_split["test"]
@@ -899,6 +908,8 @@ def extract_all_activations(
         desc,
         layer=layer,
         pooling=pooling,
+        answer_span=answer_span,
+        answer_suffix=answer_suffix,
     )
     return slice_activations(acts, sizes)
 
@@ -1741,27 +1752,35 @@ def main() -> None:
         device,
         output_dir,
     )
-    # kNN / RP may use a different activation LAYER (--representation-layer) and/or token
-    # POOLING (--representation-pooling) as a control. The weak probe/confidence and the
-    # L2-residual maps stay on the default end-layer / last-token reps (extracted above); only
-    # the kNN and RP representations move, so the weak labels are held fixed across the
-    # comparison. The default (end, last) reuses the already-extracted acts (no extra cost).
-    rep_is_default = args.representation_layer == "end" and args.representation_pooling == "last"
+    # kNN / RP may use a different activation LAYER (--representation-layer), token POOLING
+    # (--representation-pooling), and/or SPAN (--representation-span: full prompt vs answer-only,
+    # masking the question) as controls. The weak probe/confidence and the L2-residual maps stay
+    # on the default end-layer / last-token / full-prompt reps (extracted above); only the kNN and
+    # RP representations move, so the weak labels (and the oracle) are held fixed across the
+    # comparison. The default (end, last, full) reuses the already-extracted acts (no extra cost).
+    answer_span = args.representation_span == "answer"
+    rep_is_default = (
+        args.representation_layer == "end"
+        and args.representation_pooling == "last"
+        and not answer_span
+    )
     if rep_is_default:
         rep_weak_acts, rep_strong_acts = weak_acts, strong_acts
     else:
-        rep_tag = f"{args.representation_layer},{args.representation_pooling}"
+        rep_tag = f"{args.representation_layer},{args.representation_pooling},{args.representation_span}"
         rep_weak_acts = extract_all_activations(
             args.weak_model, texts, device, args.torch_dtype,
             args.activation_batch_size, args.activation_max_length,
             f"extract weak activations ({rep_tag})",
             layer=args.representation_layer, pooling=args.representation_pooling,
+            answer_span=answer_span, answer_suffix=args.answer_suffix,
         )
         rep_strong_acts = extract_all_activations(
             args.strong_model, texts, device, args.torch_dtype,
             args.activation_batch_size, args.activation_max_length,
             f"extract strong activations ({rep_tag})",
             layer=args.representation_layer, pooling=args.representation_pooling,
+            answer_span=answer_span, answer_suffix=args.answer_suffix,
         )
     knn_stats = compute_weak_train_knn_stats(
         rep_strong_acts["weak_train"],

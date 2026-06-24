@@ -258,6 +258,57 @@ def batched_indices(n_items: int, batch_size: int):
         yield start, min(start + batch_size, n_items)
 
 
+def answer_span_char_bounds(prompt: str, marker: str, answer_suffix: str) -> tuple[int, int]:
+    """Character range [start, end) of the ANSWER part of a candidate-correctness prompt.
+
+    Prompts are built as ``{text}{answer_suffix}`` where ``text`` ends with the answer/
+    candidate, e.g. ``Premise: ...\\nHypothesis: ...\\nQ: ...? A: {candidate}`` and
+    ``answer_suffix`` is the fixed yes/no instruction (``\\nIs the candidate answer correct?
+    Answer:``). The "answer part" the meeting asked to isolate is ``A: {candidate}`` -- from
+    the LAST ``marker`` ("A:") through the end of ``text`` (excluding the question prefix AND
+    the trailing instruction suffix). Returns (-1, -1) if the marker is absent (caller falls
+    back to the full sequence), so this is safe on datasets whose prompts lack the marker.
+    """
+    end = len(prompt) - len(answer_suffix) if answer_suffix else len(prompt)
+    start = prompt.rfind(marker, 0, end)
+    if start < 0 or end <= start:
+        return -1, -1
+    return start, end
+
+
+def build_answer_span_mask(
+    offsets: torch.Tensor,
+    attention_mask: torch.Tensor,
+    batch_texts: list[str],
+    marker: str,
+    answer_suffix: str,
+) -> tuple[torch.Tensor, int]:
+    """0/1 mask selecting only the tokens inside each prompt's answer span (see
+    :func:`answer_span_char_bounds`). ``offsets`` is the fast-tokenizer offset mapping
+    [B, T, 2]; special/pad tokens have (0, 0) and are excluded. Rows whose answer span is
+    empty (marker missing, or truncated away) fall back to the full attention mask. Returns
+    (span_mask, n_fallback) so the caller can warn when truncation ate the answer."""
+    span_mask = torch.zeros_like(attention_mask)
+    n_fallback = 0
+    for b, prompt in enumerate(batch_texts):
+        start_char, end_char = answer_span_char_bounds(prompt, marker, answer_suffix)
+        if start_char < 0:
+            span_mask[b] = attention_mask[b]
+            n_fallback += 1
+            continue
+        row = span_mask[b]
+        for t in range(offsets.shape[1]):
+            s, e = int(offsets[b, t, 0]), int(offsets[b, t, 1])
+            if e <= s:  # special / pad token -> (0, 0)
+                continue
+            if s >= start_char and e <= end_char:
+                row[t] = 1
+        if int((row * attention_mask[b]).sum()) == 0:  # span truncated away
+            span_mask[b] = attention_mask[b]
+            n_fallback += 1
+    return span_mask, n_fallback
+
+
 @torch.no_grad()
 def extract_final_token_activations(
     model_name: str,
@@ -269,6 +320,9 @@ def extract_final_token_activations(
     desc: str,
     layer: str | int = "end",
     pooling: str = "last",
+    answer_span: bool = False,
+    answer_marker: str = "A:",
+    answer_suffix: str = "",
 ) -> torch.Tensor:
     """Per-prompt hidden state at the requested transformer layer and token pooling.
 
@@ -277,6 +331,10 @@ def extract_final_token_activations(
     control), or an explicit integer index into ``outputs.hidden_states``.
     pooling: "last" (the final non-pad token -- the probe / W2S-paper lineage) or "mean"
     (average over the non-pad tokens; kNN/RP can use this as a control).
+    answer_span: if True, pool only over the ANSWER part of each prompt ("A: {candidate}",
+    masking the question prefix and the trailing yes/no instruction ``answer_suffix``) --
+    the answer-only ablation. Needs a fast tokenizer (offset mapping). Rows whose answer
+    span is missing/truncated fall back to the full sequence.
     """
     dtype = resolve_dtype(dtype_arg)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -296,6 +354,7 @@ def extract_final_token_activations(
     model.eval()
 
     activations = []
+    span_fallbacks = 0
     for start, end in tqdm(list(batched_indices(len(texts), batch_size)), desc=desc):
         batch_texts = texts[start:end]
         tokenize_kwargs: dict[str, Any] = {
@@ -305,7 +364,21 @@ def extract_final_token_activations(
         }
         if max_length is not None:
             tokenize_kwargs["max_length"] = max_length
-        inputs = tokenizer(batch_texts, **tokenize_kwargs).to(device)
+        if answer_span:
+            tokenize_kwargs["return_offsets_mapping"] = True
+        inputs = tokenizer(batch_texts, **tokenize_kwargs)
+        offsets = inputs.pop("offset_mapping", None)
+        inputs = inputs.to(device)
+        # pool_mask selects which tokens contribute: the full attention mask, or (answer_span)
+        # only the answer-part tokens of each prompt.
+        if answer_span:
+            span_mask, n_fb = build_answer_span_mask(
+                offsets, inputs["attention_mask"].cpu(), batch_texts, answer_marker, answer_suffix
+            )
+            span_fallbacks += n_fb
+            pool_mask = (span_mask.to(device) * inputs["attention_mask"]).to(torch.long)
+        else:
+            pool_mask = inputs["attention_mask"]
         outputs = model(**inputs, output_hidden_states=True)
         hidden = outputs.hidden_states
         if layer == "end":
@@ -316,13 +389,17 @@ def extract_final_token_activations(
             layer_idx = int(layer)
         last_hidden = hidden[layer_idx]
         if pooling == "mean":
-            mask = inputs["attention_mask"].unsqueeze(-1).to(last_hidden.dtype)
+            mask = pool_mask.unsqueeze(-1).to(last_hidden.dtype)
             pooled = (last_hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1.0)
-        else:  # "last": the final non-pad token
-            last_indices = inputs["attention_mask"].sum(dim=1) - 1
+        else:  # "last": the final selected (non-pad / in-span) token
+            arange = torch.arange(pool_mask.shape[1], device=device).unsqueeze(0)
+            last_indices = (pool_mask * arange).argmax(dim=1)
             batch_indices = torch.arange(last_hidden.shape[0], device=device)
             pooled = last_hidden[batch_indices, last_indices]
         activations.append(pooled.detach().to(torch.float32).cpu())
+    if answer_span and span_fallbacks:
+        print(f"[answer-span] {span_fallbacks}/{len(texts)} prompts fell back to full sequence "
+              f"(marker '{answer_marker}' missing or truncated away).")
 
     del model
     del tokenizer
