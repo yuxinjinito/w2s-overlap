@@ -92,9 +92,101 @@ def sciq_questions(n: int, seed: int):
     return out
 
 
+# --- candidate W2S testbeds (Stage-1 headroom screen): adversarial NLI + logical-reasoning MC.
+# All return (ctx, options, gold_idx), like the loaders above. Chosen because difficulty is from
+# adversarial construction / reasoning (latent, elicitable capability), so they are plausibly
+# base-near-chance AND robust to pretraining contamination (see dataset_collection_method note).
+
+def wanli_questions(n: int, seed: int):
+    """WANLI: worker-and-AI adversarial NLI (3-way relation), same format as ANLI."""
+    raw = load_dataset("alisawuffles/WANLI", split="test").shuffle(seed=seed)
+    rel2idx = {"entailment": 0, "neutral": 1, "contradiction": 2}
+    out = []
+    for ex in raw:
+        gold = rel2idx.get(ex["gold"])
+        if gold is None:
+            continue
+        ctx = (
+            f"Premise: {ex['premise']}\n"
+            f"Hypothesis: {ex['hypothesis']}\n"
+            "Q: What is the relationship from the premise to the hypothesis? A:"
+        )
+        out.append((ctx, list(ANLI_RELATIONS), gold))
+        if len(out) >= n:
+            break
+    return out
+
+
+def reclor_questions(n: int, seed: int):
+    """ReClor: LSAT/GMAT logical-reasoning MC (4 options). Test labels hidden -> use validation."""
+    raw = load_dataset("metaeval/reclor", split="validation").shuffle(seed=seed)
+    out = []
+    for ex in raw:
+        ctx = f"{ex['context'].strip()}\nQ: {ex['question'].strip()} A:"
+        out.append((ctx, [str(a).strip() for a in ex["answers"]], int(ex["label"])))
+        if len(out) >= n:
+            break
+    return out
+
+
+def art_questions(n: int, seed: int):
+    """ART / alphaNLI: abductive NLI -- pick the hypothesis that better explains the observations
+    (2 options). label is 1-indexed (1 or 2)."""
+    raw = load_dataset("allenai/art", split="validation").shuffle(seed=seed)
+    out = []
+    for ex in raw:
+        ctx = (
+            f"Observation 1: {ex['observation_1'].strip()}\n"
+            f"Observation 2: {ex['observation_2'].strip()}\n"
+            "Q: Which hypothesis better explains the observations? A:"
+        )
+        options = [ex["hypothesis_1"].strip(), ex["hypothesis_2"].strip()]
+        out.append((ctx, options, int(ex["label"]) - 1))
+        if len(out) >= n:
+            break
+    return out
+
+
+def logiqa2_questions(n: int, seed: int):
+    """LogiQA 2.0: logical-reasoning MC (4 options). Rows are a JSON string under 'text'.
+    This HF mirror mixes in NLI-style rows (no options); keep only the MC rows."""
+    import json as _json
+
+    raw = load_dataset("datatune/LogiQA2.0", split="test").shuffle(seed=seed)
+    out = []
+    for row in raw:
+        try:
+            ex = _json.loads(row["text"])
+        except Exception:
+            continue
+        if not all(k in ex for k in ("options", "answer", "question", "text")):
+            continue  # skip the mixed-in NLI-style rows
+        options = [str(o).strip() for o in ex["options"]]
+        try:
+            gold = int(ex["answer"])
+        except (ValueError, TypeError):
+            continue
+        if not 0 <= gold < len(options):
+            continue
+        ctx = f"{ex['text'].strip()}\nQ: {ex['question'].strip()} A:"
+        out.append((ctx, options, gold))
+        if len(out) >= n:
+            break
+    return out
+
+
+CANDIDATE_LOADERS = {
+    "wanli": wanli_questions,
+    "reclor": reclor_questions,
+    "art": art_questions,
+    "logiqa2": logiqa2_questions,
+}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset", default="hellaswag", choices=["hellaswag", "dream", "anli", "sciq"])
+    ap.add_argument("--dataset", default="hellaswag",
+                    choices=["hellaswag", "dream", "anli", "sciq", "wanli", "reclor", "art", "logiqa2"])
     ap.add_argument("--anli-round", default="r2", choices=["r1", "r2", "r3"])
     ap.add_argument("--model", default="meta-llama/Llama-3.1-8B")
     ap.add_argument("--n-questions", type=int, default=500)
@@ -111,8 +203,10 @@ def main() -> None:
         qs = dream_questions(args.n_questions, args.seed)
     elif args.dataset == "anli":
         qs = anli_questions(args.n_questions, args.seed, args.anli_round)
-    else:  # sciq
+    elif args.dataset == "sciq":
         qs = sciq_questions(args.n_questions, args.seed)
+    else:  # candidate testbeds: wanli / reclor / art / logiqa2
+        qs = CANDIDATE_LOADERS[args.dataset](args.n_questions, args.seed)
     print(f"dataset={args.dataset}  model={args.model}  questions={len(qs)}")
 
     tokenizer = AutoTokenizer.from_pretrained(args.model)
