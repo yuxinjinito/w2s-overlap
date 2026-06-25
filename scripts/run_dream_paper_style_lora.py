@@ -183,6 +183,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--residual-keep-middle-frac", type=float, default=0.5)
     parser.add_argument("--confidence-keep-frac", type=float, default=0.5)
+    parser.add_argument("--confidence-cleanhard-easy-drop", type=float, default=0.10,
+                        help="Percentile-range knob for the confidence 'clean-but-hard' band "
+                             "(confidence_cleanhard_*): fraction of the EASIEST (highest-confidence) "
+                             "points to drop off the top before keeping the next keep_frac below. "
+                             "0.10 + frac 0.5 -> keep the [40%%, 90%%] confidence band.")
     parser.add_argument("--knn-k", type=int, default=20)
     parser.add_argument("--knn-keep-middle-frac", type=float, default=0.5)
     parser.add_argument("--knn-mixed-center", type=float, default=0.5)
@@ -296,6 +301,8 @@ def requested_runs(args: argparse.Namespace) -> list[str]:
             "knn_mixed_balanced_f",
             "confidence_high_balanced_f",
             "confidence_low_balanced_f",
+            "confidence_cleanhard_balanced_f",
+            "curriculum_confhigh_f",
             "rp_high_balanced_f",
             "rp_low_balanced_f",
             "el_high_balanced_f",
@@ -1304,6 +1311,20 @@ def score_band_indices(scores: np.ndarray, keep_frac: float, mode: str) -> tuple
         "kept_score_mean": float(np.mean(kept_scores)),
         "kept_score_median": float(np.median(kept_scores)),
     }
+
+
+def score_percentile_band_indices(scores: np.ndarray, lo_pct: float, hi_pct: float) -> np.ndarray:
+    """Keep the examples whose score falls in the [lo_pct, hi_pct] percentile band (ascending
+    sort). E.g. (0.40, 0.90) drops the bottom 40% and the top 10%. This is the percentile-range
+    knob for the confidence 'clean-but-hard' band: drop the noisy-low tail (wrong labels) AND the
+    trivially-easy-high tail (redundant, already learnt)."""
+    if not 0.0 <= lo_pct < hi_pct <= 1.0:
+        raise ValueError(f"need 0 <= lo_pct < hi_pct <= 1, got ({lo_pct}, {hi_pct})")
+    order = np.argsort(scores)
+    n = len(order)
+    start = int(round(n * lo_pct))
+    end = max(start + 1, int(round(n * hi_pct)))
+    return order[start:end]
 
 
 def score_closest_indices(
@@ -2344,6 +2365,27 @@ def main() -> None:
             [strong_examples[int(i)] for i in conf_high_bal],
             [weak_labels[int(i)] for i in conf_high_bal],
         )
+        # confidence_cleanhard: keep the clean-but-hard band -- drop the noisy-low tail (wrong
+        # labels) AND the trivially-easy-high tail (redundant, already learnt). Keep the
+        # [hi-frac, hi] confidence percentiles where hi = 1 - easy_drop. With frac 0.5 +
+        # easy_drop 0.10 -> the [40%, 90%] band.
+        ch_hi = min(1.0, 1.0 - float(args.confidence_cleanhard_easy_drop))
+        ch_lo = max(0.0, ch_hi - frac)
+        cleanhard_idx = score_percentile_band_indices(weak_confidences_strong, ch_lo, ch_hi)
+        cleanhard_bal = hard_weak_label_balance(cleanhard_idx, weak_preds_strong, args.seed + 14700 + fi)
+        run_subsets[f"confidence_cleanhard_balanced_f{pct}"] = (
+            [strong_examples[int(i)] for i in cleanhard_bal],
+            [weak_labels[int(i)] for i in cleanhard_bal],
+        )
+        # curriculum_confhigh: curriculum learning ON the confidence_high clean subset only --
+        # same examples as confidence_high_balanced, but trained easy->hard (most-confident first)
+        # WITHIN the clean set instead of shuffled. Order indexes into the subset.
+        run_subsets[f"curriculum_confhigh_f{pct}"] = (
+            [strong_examples[int(i)] for i in conf_high_bal],
+            [weak_labels[int(i)] for i in conf_high_bal],
+        )
+        ch_sub_conf = weak_confidences_strong[np.asarray(conf_high_bal, dtype=int)]
+        curriculum_orders[f"curriculum_confhigh_f{pct}"] = list(np.argsort(-ch_sub_conf))
         conf_low_idx, _ = score_band_indices(weak_confidences_strong, frac, "low")
         conf_low_bal = hard_weak_label_balance(conf_low_idx, weak_preds_strong, args.seed + 14500 + fi)
         run_subsets[f"confidence_low_balanced_f{pct}"] = (
