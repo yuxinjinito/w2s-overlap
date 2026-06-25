@@ -73,7 +73,7 @@ class LoraExample:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", choices=["dream", "sciq", "paws", "anli", "hellaswag"], default="dream")
+    parser.add_argument("--dataset", choices=["dream", "sciq", "paws", "anli", "hellaswag", "reclor", "logiqa2"], default="dream")
     parser.add_argument(
         "--anli-round",
         choices=["r1", "r2", "r3"],
@@ -682,6 +682,136 @@ def load_paper_anli_splits(
     )
 
 
+# --- ReClor / LogiQA2: logical-reasoning multiple-choice candidate-correctness testbeds.
+# Same candidate-correctness reduction as ANLI/SciQ: sample a candidate option (50% gold,
+# 50% a wrong one), the model judges yes/no; mc_options keeps all options for the MC eval.
+
+def _mc_candidate_row(prefix: str, row_id: int, ctx: str, options: list[str], gold: int,
+                      rng: random.Random) -> dict:
+    hard_label = int(rng.random() < 0.5)
+    if hard_label:
+        cand = gold
+    else:
+        cand = rng.choice([k for k in range(len(options)) if k != gold])
+    return {
+        "id": f"{prefix}-{row_id}",
+        "source_id": f"{prefix}-{row_id}",
+        "txt": f"{ctx} {options[cand]}",
+        "labels": hard_label,
+        "gt_labels": hard_label,
+        "mc_options": [f"{ctx} {o}" for o in options],
+        "mc_correct": gold,
+    }
+
+
+def _reclor_ctx(ex: dict) -> str:
+    return f"{ex['context'].strip()}\nQ: {ex['question'].strip()} A:"
+
+
+def format_reclor_paper_style(ex: dict, row_id: int, rng: random.Random) -> dict:
+    options = [str(a).strip() for a in ex["answers"]]
+    return _mc_candidate_row("reclor", row_id, _reclor_ctx(ex), options, int(ex["label"]), rng)
+
+
+def load_and_process_reclor_split(split: str, n_docs: int, seed: int) -> Dataset:
+    raw = load_dataset("metaeval/reclor", split=split).shuffle(seed=seed)
+    rng = random.Random(seed)
+    rows = [format_reclor_paper_style(ex, i, rng) for i, ex in enumerate(raw)]
+    ds = Dataset.from_list(rows).filter(lambda ex: ex["txt"] != "")
+    ds = balance_binary_dataset(ds, seed)
+    if len(ds) < n_docs:
+        print(f"reclor/{split} has < {n_docs} docs after balancing, using all {len(ds)}")
+    return ds.select(range(min(n_docs, len(ds))))
+
+
+def load_paper_reclor_splits(n_train: int, n_val: int, n_test: int, seed: int) -> SplitBundle:
+    # ReClor test labels are hidden -> train pool from "train", eval from labelled "validation".
+    train_pool = load_and_process_reclor_split("train", n_train + n_val, seed)
+    test = load_and_process_reclor_split("validation", n_test, seed + 2)
+    val_count = min(n_val, len(train_pool))
+    val = train_pool.select(range(val_count))
+    train = train_pool.select(range(val_count, len(train_pool)))
+    halves = train.train_test_split(test_size=0.5, seed=seed)
+    return SplitBundle(weak_train=halves["train"], strong_train=halves["test"], val=val, test=test)
+
+
+def load_reclor_multichoice_eval(n_questions: int, seed: int) -> list[dict]:
+    raw = load_dataset("metaeval/reclor", split="validation").shuffle(seed=seed)
+    rng = random.Random(seed + 7)
+    out: list[dict] = []
+    n = 0
+    for ex in raw:
+        if n >= n_questions:
+            break
+        options = [str(a).strip() for a in ex["answers"]]
+        gold = int(ex["label"])
+        ctx = _reclor_ctx(ex)
+        for slot, o in enumerate(options):
+            out.append({"id": f"reclor-mc-{n}-{slot}", "source_id": f"reclor-mc-{n}",
+                        "txt": f"{ctx} {o}", "labels": int(slot == gold)})
+        n += 1
+    return out
+
+
+def _iter_logiqa2_mc(split: str):
+    """LogiQA2.0 HF mirror mixes NLI-style rows in; yield only the MC rows (parsed JSON)."""
+    raw = load_dataset("datatune/LogiQA2.0", split=split)
+    for row in raw:
+        try:
+            ex = json.loads(row["text"])
+        except Exception:
+            continue
+        if not all(k in ex for k in ("options", "answer", "question", "text")):
+            continue
+        try:
+            gold = int(ex["answer"])
+        except (ValueError, TypeError):
+            continue
+        options = [str(o).strip() for o in ex["options"]]
+        if 0 <= gold < len(options):
+            yield ex, options, gold
+
+
+def _logiqa2_ctx(ex: dict) -> str:
+    return f"{ex['text'].strip()}\nQ: {ex['question'].strip()} A:"
+
+
+def load_and_process_logiqa2_split(split: str, n_docs: int, seed: int) -> Dataset:
+    rng = random.Random(seed)
+    rows = [
+        _mc_candidate_row("logiqa2", i, _logiqa2_ctx(ex), options, gold, rng)
+        for i, (ex, options, gold) in enumerate(_iter_logiqa2_mc(split))
+    ]
+    random.Random(seed + 1).shuffle(rows)
+    ds = Dataset.from_list(rows).filter(lambda ex: ex["txt"] != "")
+    ds = balance_binary_dataset(ds, seed)
+    if len(ds) < n_docs:
+        print(f"logiqa2/{split} has < {n_docs} MC docs after balancing, using all {len(ds)}")
+    return ds.select(range(min(n_docs, len(ds))))
+
+
+def load_paper_logiqa2_splits(n_train: int, n_val: int, n_test: int, seed: int) -> SplitBundle:
+    train_pool = load_and_process_logiqa2_split("train", n_train + n_val, seed)
+    test = load_and_process_logiqa2_split("test", n_test, seed + 2)
+    val_count = min(n_val, len(train_pool))
+    val = train_pool.select(range(val_count))
+    train = train_pool.select(range(val_count, len(train_pool)))
+    halves = train.train_test_split(test_size=0.5, seed=seed)
+    return SplitBundle(weak_train=halves["train"], strong_train=halves["test"], val=val, test=test)
+
+
+def load_logiqa2_multichoice_eval(n_questions: int, seed: int) -> list[dict]:
+    rows = list(_iter_logiqa2_mc("test"))
+    random.Random(seed).shuffle(rows)
+    out: list[dict] = []
+    for n, (ex, options, gold) in enumerate(rows[:n_questions]):
+        ctx = _logiqa2_ctx(ex)
+        for slot, o in enumerate(options):
+            out.append({"id": f"logiqa2-mc-{n}-{slot}", "source_id": f"logiqa2-mc-{n}",
+                        "txt": f"{ctx} {o}", "labels": int(slot == gold)})
+    return out
+
+
 def load_paper_style_splits(args: argparse.Namespace) -> SplitBundle:
     if args.dataset == "dream":
         return load_paper_dream_splits(args.n_train, args.n_val, args.n_test, args.seed)
@@ -701,6 +831,10 @@ def load_paper_style_splits(args: argparse.Namespace) -> SplitBundle:
         )
     if args.dataset == "hellaswag":
         return load_paper_hellaswag_splits(args.n_train, args.n_val, args.n_test, args.seed)
+    if args.dataset == "reclor":
+        return load_paper_reclor_splits(args.n_train, args.n_val, args.n_test, args.seed)
+    if args.dataset == "logiqa2":
+        return load_paper_logiqa2_splits(args.n_train, args.n_val, args.n_test, args.seed)
     raise ValueError(f"Unsupported dataset: {args.dataset}")
 
 
@@ -749,6 +883,14 @@ def format_summary(args: argparse.Namespace) -> dict[str, str]:
             "candidate_text": "'{context} {ending}'",
             "label": "1 if the ending is the gold HellaSwag continuation, else 0",
             "takeaway": "This run uses HellaSwag (4-way commonsense ending) as binary candidate-ending correctness -> weak model near chance.",
+        }
+    if args.dataset in ("reclor", "logiqa2"):
+        nice = "ReClor" if args.dataset == "reclor" else "LogiQA 2.0"
+        return {
+            "task": f"paper-style binary candidate-answer correctness ({nice})",
+            "candidate_text": "'{context}\\nQ: {question} A: {candidate}'",
+            "label": f"1 if the candidate option is the gold {nice} answer, else 0",
+            "takeaway": f"This run uses {nice} (logical-reasoning MC) as binary candidate-answer correctness -> base near chance in the eval format.",
         }
     raise ValueError(f"Unsupported dataset: {args.dataset}")
 
@@ -1908,6 +2050,10 @@ def main() -> None:
             )
         elif args.dataset == "hellaswag":
             multichoice_rows = load_hellaswag_multichoice_eval(args.n_eval_questions, args.seed + 2)
+        elif args.dataset == "reclor":
+            multichoice_rows = load_reclor_multichoice_eval(args.n_eval_questions, args.seed + 2)
+        elif args.dataset == "logiqa2":
+            multichoice_rows = load_logiqa2_multichoice_eval(args.n_eval_questions, args.seed + 2)
         else:
             multichoice_rows = []
         if multichoice_rows:
