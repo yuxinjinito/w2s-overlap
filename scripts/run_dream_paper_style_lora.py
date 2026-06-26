@@ -188,6 +188,11 @@ def parse_args() -> argparse.Namespace:
                              "(confidence_cleanhard_*): fraction of the EASIEST (highest-confidence) "
                              "points to drop off the top before keeping the next keep_frac below. "
                              "0.10 + frac 0.5 -> keep the [40%%, 90%%] confidence band.")
+    parser.add_argument("--quantile-bins", type=int, default=0,
+                        help="If >1, add disjoint equal-size quantile-bin selectors "
+                             "{rp,el,confidence}_q{i}_balanced (q0 = highest-score bin .. q{K-1} = "
+                             "lowest) for a dose-response / separation analysis. All bins are the "
+                             "same size, isolating the score's discriminability from sample size.")
     parser.add_argument("--knn-k", type=int, default=20)
     parser.add_argument("--knn-keep-middle-frac", type=float, default=0.5)
     parser.add_argument("--knn-mixed-center", type=float, default=0.5)
@@ -316,7 +321,13 @@ def requested_runs(args: argparse.Namespace) -> list[str]:
                 return True
         return False
 
-    unknown = sorted(r for r in set(runs) - allowed if not _is_frac_run(r))
+    def _is_quantile_run(name: str) -> bool:
+        for sig in ("rp_q", "el_q", "confidence_q"):
+            if name.startswith(sig) and name[len(sig):len(sig) + 1].isdigit() and name.endswith("_balanced"):
+                return True
+        return False
+
+    unknown = sorted(r for r in set(runs) - allowed if not _is_frac_run(r) and not _is_quantile_run(r))
     if unknown:
         raise SystemExit(f"Unknown run(s): {', '.join(unknown)}")
     return runs
@@ -2450,6 +2461,27 @@ def main() -> None:
             [strong_examples[int(i)] for i in knn_mixed_bal],
             [weak_labels[int(i)] for i in knn_mixed_bal],
         )
+
+    # Disjoint equal-size quantile bins for a dose-response / separation analysis (--quantile-bins K):
+    # for rp / el / confidence, split into K equal-size bins by score percentile; q0 = highest-score
+    # bin (top 1/K) .. q{K-1} = lowest. All bins are the SAME size, so accuracy differences isolate
+    # the score's discriminability from sample-size effects (unlike a cumulative top-x% sweep). A
+    # genuine ordering signal -> monotonic accuracy across bins; separation = q0 - q{K-1}.
+    if args.quantile_bins and args.quantile_bins > 1:
+        K = int(args.quantile_bins)
+        qsignals = {"rp": rp_scores, "confidence": weak_confidences_strong}
+        if el_scores is not None:
+            qsignals["el"] = el_scores
+        for sidx, (sig_name, scores) in enumerate(qsignals.items()):
+            for i in range(K):
+                hi, lo = 1.0 - i / K, 1.0 - (i + 1) / K
+                q_idx = score_percentile_band_indices(scores, lo, hi)
+                q_bal = hard_weak_label_balance(q_idx, weak_preds_strong, args.seed + 20000 + 100 * sidx + i)
+                run_subsets[f"{sig_name}_q{i}_balanced"] = (
+                    [strong_examples[int(j)] for j in q_bal],
+                    [weak_labels[int(j)] for j in q_bal],
+                )
+
     random_run_names: list[str] = []
     random_unbalanced_run_names: list[str] = []
     if "random_unbalanced" in runs:

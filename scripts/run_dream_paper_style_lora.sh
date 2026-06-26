@@ -115,6 +115,8 @@ REPRESENTATION_LAYER="${REPRESENTATION_LAYER:-end}"
 REPRESENTATION_POOLING="${REPRESENTATION_POOLING:-last}"
 # Span the kNN/RP representation pools over: 'full' (whole prompt) or 'answer' (answer-only).
 REPRESENTATION_SPAN="${REPRESENTATION_SPAN:-full}"
+# >1 adds disjoint equal-size quantile-bin selectors {rp,el,confidence}_q{i}_balanced (dose-response).
+QUANTILE_BINS="${QUANTILE_BINS:-0}"
 # Temperature for the continuous-weighting runs (rp_weighted / el_weighted / conf_weighted).
 WEIGHT_TEMPERATURE="${WEIGHT_TEMPERATURE:-1.0}"
 MAX_GRAD_NORM="${MAX_GRAD_NORM:-0.0}"
@@ -234,6 +236,7 @@ python3 scripts/run_dream_paper_style_lora.py \
   --representation-layer "$REPRESENTATION_LAYER" \
   --representation-pooling "$REPRESENTATION_POOLING" \
   --representation-span "$REPRESENTATION_SPAN" \
+  --quantile-bins "$QUANTILE_BINS" \
   --weight-temperature "$WEIGHT_TEMPERATURE" \
   --max-grad-norm "$MAX_GRAD_NORM" \
   --lora-r "$LORA_R" \
