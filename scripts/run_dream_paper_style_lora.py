@@ -73,7 +73,7 @@ class LoraExample:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", choices=["dream", "sciq", "paws", "anli", "hellaswag", "reclor", "logiqa2", "wanli"], default="dream")
+    parser.add_argument("--dataset", choices=["dream", "sciq", "paws", "anli", "hellaswag", "reclor", "logiqa2", "wanli", "control"], default="dream")
     parser.add_argument(
         "--anli-round",
         choices=["r1", "r2", "r3"],
@@ -896,6 +896,72 @@ def load_wanli_multichoice_eval(n_questions: int, seed: int) -> list[dict]:
     return out
 
 
+# --- ConTRoL: contextual-reasoning adversarial NLI (3-way), same reduction as ANLI/WANLI.
+CONTROL_REL2IDX = {"entailment": 0, "neutral": 1, "contradiction": 2}
+
+
+def format_control_paper_style(ex: dict, row_id: int, rng: random.Random) -> dict:
+    gold = CONTROL_REL2IDX.get(ex["label"])
+    if gold is None:
+        return {"id": "", "source_id": "", "txt": "", "labels": 0, "gt_labels": 0,
+                "mc_options": [], "mc_correct": 0}
+    hard_label = int(rng.random() < 0.5)
+    candidate = ANLI_LABELS[gold] if hard_label else rng.choice(
+        [name for key, name in ANLI_LABELS.items() if key != gold]
+    )
+    base = f"Premise: {ex['premise']}\nHypothesis: {ex['hypothesis']}\n"
+    q = "Q: What is the relationship from the premise to the hypothesis? A:"
+    return {
+        "id": f"control-{row_id}", "source_id": f"control-{row_id}",
+        "txt": f"{base}{q} {candidate}",
+        "labels": hard_label, "gt_labels": hard_label,
+        "mc_options": [f"{base}{q} {ANLI_LABELS[k]}" for k in (0, 1, 2)],
+        "mc_correct": gold,
+    }
+
+
+def load_and_process_control_split(split: str, n_docs: int, seed: int) -> Dataset:
+    raw = load_dataset("tasksource/ConTRoL-nli", split=split).shuffle(seed=seed)
+    raw = raw.filter(lambda ex: ex["label"] in CONTROL_REL2IDX)
+    rng = random.Random(seed)
+    rows = [format_control_paper_style(ex, i, rng) for i, ex in enumerate(raw)]
+    ds = Dataset.from_list(rows).filter(lambda ex: ex["txt"] != "")
+    ds = balance_binary_dataset(ds, seed)
+    if len(ds) < n_docs:
+        print(f"control/{split} has < {n_docs} docs after balancing, using all {len(ds)}")
+    return ds.select(range(min(n_docs, len(ds))))
+
+
+def load_paper_control_splits(n_train: int, n_val: int, n_test: int, seed: int) -> SplitBundle:
+    train_pool = load_and_process_control_split("train", n_train + n_val, seed)
+    test = load_and_process_control_split("test", n_test, seed + 2)
+    val_count = min(n_val, len(train_pool))
+    val = train_pool.select(range(val_count))
+    train = train_pool.select(range(val_count, len(train_pool)))
+    halves = train.train_test_split(test_size=0.5, seed=seed)
+    return SplitBundle(weak_train=halves["train"], strong_train=halves["test"], val=val, test=test)
+
+
+def load_control_multichoice_eval(n_questions: int, seed: int) -> list[dict]:
+    raw = load_dataset("tasksource/ConTRoL-nli", split="test").shuffle(seed=seed)
+    rng = random.Random(seed + 7)
+    out: list[dict] = []
+    n = 0
+    for ex in raw:
+        if n >= n_questions:
+            break
+        gold = CONTROL_REL2IDX.get(ex["label"])
+        if gold is None:
+            continue
+        base = f"Premise: {ex['premise']}\nHypothesis: {ex['hypothesis']}\n"
+        q = "Q: What is the relationship from the premise to the hypothesis? A:"
+        for slot, ri in enumerate(rng.sample(range(3), 3)):
+            out.append({"id": f"control-mc-{n}-{slot}", "source_id": f"control-mc-{n}",
+                        "txt": f"{base}{q} {ANLI_LABELS[ri]}", "labels": int(ri == gold)})
+        n += 1
+    return out
+
+
 def load_paper_style_splits(args: argparse.Namespace) -> SplitBundle:
     if args.dataset == "dream":
         return load_paper_dream_splits(args.n_train, args.n_val, args.n_test, args.seed)
@@ -921,6 +987,8 @@ def load_paper_style_splits(args: argparse.Namespace) -> SplitBundle:
         return load_paper_logiqa2_splits(args.n_train, args.n_val, args.n_test, args.seed)
     if args.dataset == "wanli":
         return load_paper_wanli_splits(args.n_train, args.n_val, args.n_test, args.seed)
+    if args.dataset == "control":
+        return load_paper_control_splits(args.n_train, args.n_val, args.n_test, args.seed)
     raise ValueError(f"Unsupported dataset: {args.dataset}")
 
 
@@ -984,6 +1052,13 @@ def format_summary(args: argparse.Namespace) -> dict[str, str]:
             "candidate_text": "'Premise: ...\\nHypothesis: ...\\nQ: What is the relationship ...? A: {candidate}'",
             "label": "1 if the candidate relation (entailment/neutral/contradiction) is the gold WANLI label, else 0",
             "takeaway": "This run uses WANLI (worker-and-AI adversarial NLI) as binary candidate-relation correctness -> ANLI-like noisy-weak regime.",
+        }
+    if args.dataset == "control":
+        return {
+            "task": "paper-style binary candidate-relation correctness (ConTRoL)",
+            "candidate_text": "'Premise: ...\\nHypothesis: ...\\nQ: What is the relationship ...? A: {candidate}'",
+            "label": "1 if the candidate relation (entailment/neutral/contradiction) is the gold ConTRoL label, else 0",
+            "takeaway": "This run uses ConTRoL (contextual-reasoning adversarial NLI) as binary candidate-relation correctness -> low-base testbed search.",
         }
     raise ValueError(f"Unsupported dataset: {args.dataset}")
 
@@ -2163,6 +2238,8 @@ def main() -> None:
             multichoice_rows = load_logiqa2_multichoice_eval(args.n_eval_questions, args.seed + 2)
         elif args.dataset == "wanli":
             multichoice_rows = load_wanli_multichoice_eval(args.n_eval_questions, args.seed + 2)
+        elif args.dataset == "control":
+            multichoice_rows = load_control_multichoice_eval(args.n_eval_questions, args.seed + 2)
         else:
             multichoice_rows = []
         if multichoice_rows:
