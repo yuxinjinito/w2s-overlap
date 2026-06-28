@@ -175,18 +175,80 @@ def logiqa2_questions(n: int, seed: int):
     return out
 
 
+def _nli_relation_questions(hf: str, split: str, premise_key: str, hypothesis_key: str,
+                            label_key: str, label_map: dict, n: int, seed: int):
+    """Generic 3-way NLI loader -> (ctx, [entailment,neutral,contradiction], gold). Used for the
+    adversarial-NLI low-base candidates (ConTRoL, SNLI-hard)."""
+    raw = load_dataset(hf, split=split).shuffle(seed=seed)
+    out = []
+    for ex in raw:
+        gold = label_map.get(ex[label_key])
+        if gold is None:
+            continue
+        ctx = (
+            f"Premise: {str(ex[premise_key]).strip()}\n"
+            f"Hypothesis: {str(ex[hypothesis_key]).strip()}\n"
+            "Q: What is the relationship from the premise to the hypothesis? A:"
+        )
+        out.append((ctx, list(ANLI_RELATIONS), gold))
+        if len(out) >= n:
+            break
+    return out
+
+
+_NLI3 = {"entailment": 0, "neutral": 1, "contradiction": 2}
+
+
+def control_questions(n: int, seed: int):
+    """ConTRoL: contextual-reasoning adversarial NLI (3-way), long premises."""
+    return _nli_relation_questions("tasksource/ConTRoL-nli", "test", "premise", "hypothesis",
+                                   "label", _NLI3, n, seed)
+
+
+def snli_hard_questions(n: int, seed: int):
+    """SNLI hard subset (3-way NLI); drops no-consensus '-' labels via the map."""
+    return _nli_relation_questions("au123/snli-hard", "test", "sentence1", "sentence2",
+                                   "gold_label", _NLI3, n, seed)
+
+
+def vitaminc_questions(n: int, seed: int):
+    """VitaminC: contrastive/adversarial fact verification (3-way), evidence + claim."""
+    raw = load_dataset("tals/vitaminc", split="test").shuffle(seed=seed)
+    rel = {"SUPPORTS": 0, "NOT ENOUGH INFO": 1, "REFUTES": 2}
+    opts = ["supported", "not enough info", "refuted"]
+    out = []
+    for ex in raw:
+        gold = rel.get(ex["label"])
+        ev = str(ex["evidence"]).strip()
+        if gold is None or not ev:
+            continue
+        ctx = (
+            f"Evidence: {ev}\n"
+            f"Claim: {str(ex['claim']).strip()}\n"
+            "Q: Based on the evidence, the claim is? A:"
+        )
+        out.append((ctx, list(opts), gold))
+        if len(out) >= n:
+            break
+    return out
+
+
 CANDIDATE_LOADERS = {
     "wanli": wanli_questions,
     "reclor": reclor_questions,
     "art": art_questions,
     "logiqa2": logiqa2_questions,
+    "control": control_questions,
+    "snli_hard": snli_hard_questions,
+    "vitaminc": vitaminc_questions,
 }
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset", default="hellaswag",
-                    choices=["hellaswag", "dream", "anli", "sciq", "wanli", "reclor", "art", "logiqa2"])
+                    choices=["hellaswag", "dream", "anli", "sciq", "wanli", "reclor", "art", "logiqa2",
+                             "control", "snli_hard", "vitaminc"])
     ap.add_argument("--anli-round", default="r2", choices=["r1", "r2", "r3"])
     ap.add_argument("--model", default="meta-llama/Llama-3.1-8B")
     ap.add_argument("--n-questions", type=int, default=500)
