@@ -258,22 +258,31 @@ def batched_indices(n_items: int, batch_size: int):
         yield start, min(start + batch_size, n_items)
 
 
-def answer_span_char_bounds(prompt: str, marker: str, answer_suffix: str) -> tuple[int, int]:
-    """Character range [start, end) of the ANSWER part of a candidate-correctness prompt.
+def answer_span_char_bounds(
+    prompt: str, marker: str, answer_suffix: str, span_kind: str = "answer"
+) -> tuple[int, int]:
+    """Character range [start, end) of a sub-span of a candidate-correctness prompt.
 
-    Prompts are built as ``{text}{answer_suffix}`` where ``text`` ends with the answer/
-    candidate, e.g. ``Premise: ...\\nHypothesis: ...\\nQ: ...? A: {candidate}`` and
-    ``answer_suffix`` is the fixed yes/no instruction (``\\nIs the candidate answer correct?
-    Answer:``). The "answer part" the meeting asked to isolate is ``A: {candidate}`` -- from
-    the LAST ``marker`` ("A:") through the end of ``text`` (excluding the question prefix AND
-    the trailing instruction suffix). Returns (-1, -1) if the marker is absent (caller falls
-    back to the full sequence), so this is safe on datasets whose prompts lack the marker.
+    Prompt form: ``Premise: ...\\nHypothesis: ...\\nQ: ...? A: {candidate}`` optionally
+    followed by ``answer_suffix`` (the fixed yes/no instruction). Two sub-spans:
+      * ``span_kind="answer"``  -> ``A: {candidate}`` (from the LAST ``marker`` through the end
+        of the text, excluding the question prefix AND the instruction suffix).
+      * ``span_kind="context"`` -> everything from the start THROUGH the marker ``A:`` but
+        EXCLUDING the candidate word (i.e. ``Premise: ... Q: ...? A:``).
+    Returns (-1, -1) if the marker is absent (caller falls back to the full sequence).
+
+    NOTE: only strip ``answer_suffix`` when the prompt actually ends with it. The
+    representation extraction tokenizes suffix-less ``txt`` (the candidate is already at the
+    end), so subtracting the suffix length there would truncate the ``A:`` marker and wrongly
+    trigger the full-sequence fallback (the earlier answer-only-span bug).
     """
-    end = len(prompt) - len(answer_suffix) if answer_suffix else len(prompt)
-    start = prompt.rfind(marker, 0, end)
-    if start < 0 or end <= start:
+    end = len(prompt) - len(answer_suffix) if (answer_suffix and prompt.endswith(answer_suffix)) else len(prompt)
+    marker_start = prompt.rfind(marker, 0, end)
+    if marker_start < 0 or end <= marker_start:
         return -1, -1
-    return start, end
+    if span_kind == "context":
+        return 0, marker_start + len(marker)
+    return marker_start, end
 
 
 def build_answer_span_mask(
@@ -282,6 +291,7 @@ def build_answer_span_mask(
     batch_texts: list[str],
     marker: str,
     answer_suffix: str,
+    span_kind: str = "answer",
 ) -> tuple[torch.Tensor, int]:
     """0/1 mask selecting only the tokens inside each prompt's answer span (see
     :func:`answer_span_char_bounds`). ``offsets`` is the fast-tokenizer offset mapping
@@ -291,7 +301,7 @@ def build_answer_span_mask(
     span_mask = torch.zeros_like(attention_mask)
     n_fallback = 0
     for b, prompt in enumerate(batch_texts):
-        start_char, end_char = answer_span_char_bounds(prompt, marker, answer_suffix)
+        start_char, end_char = answer_span_char_bounds(prompt, marker, answer_suffix, span_kind)
         if start_char < 0:
             span_mask[b] = attention_mask[b]
             n_fallback += 1
@@ -323,6 +333,7 @@ def extract_final_token_activations(
     answer_span: bool = False,
     answer_marker: str = "A:",
     answer_suffix: str = "",
+    span_kind: str = "answer",
 ) -> torch.Tensor:
     """Per-prompt hidden state at the requested transformer layer and token pooling.
 
@@ -373,7 +384,7 @@ def extract_final_token_activations(
         # only the answer-part tokens of each prompt.
         if answer_span:
             span_mask, n_fb = build_answer_span_mask(
-                offsets, inputs["attention_mask"].cpu(), batch_texts, answer_marker, answer_suffix
+                offsets, inputs["attention_mask"].cpu(), batch_texts, answer_marker, answer_suffix, span_kind
             )
             span_fallbacks += n_fb
             pool_mask = (span_mask.to(device) * inputs["attention_mask"]).to(torch.long)

@@ -25,6 +25,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+if [[ -n "${DATASET:-}" && "${DATASET}" != "anli" ]]; then
+  echo "ERROR: run_anli_band_map.sh is ANLI-pinned; use run_band_map_sweep.sh for DATASET=${DATASET}" >&2
+  exit 1
+fi
 export DATASET=anli
 export ANLI_ROUND="${ANLI_ROUND:-r2}"
 export OUTPUT_ROOT="${OUTPUT_ROOT:-results/anli_${ANLI_ROUND}_band_map_$(date +%m%d)}"
@@ -44,8 +48,8 @@ export COMMITTEE_KEEP_FRACS="${COMMITTEE_KEEP_FRACS:-0.5}"
 # settled representation choices (explicit + self-documenting; see header)
 export REPRESENTATION_LAYER="${REPRESENTATION_LAYER:-end}"
 export REPRESENTATION_POOLING="${REPRESENTATION_POOLING:-last}"
-# kNN/RP representation span: 'full' (whole prompt, settled default) or 'answer' (answer-only
-# ablation -- mask the question; weak probe/labels stay on the full prompt either way).
+# kNN/RP representation span: 'full' (whole prompt, the settled default) or 'answer' (answer-only
+# ablation -- mask the question). weak probe/labels stay on the full prompt either way.
 export REPRESENTATION_SPAN="${REPRESENTATION_SPAN:-full}"
 
 # 19 hard/control arms (weighted arms excluded by design -- see header)

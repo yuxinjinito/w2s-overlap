@@ -55,6 +55,11 @@ from run_dream_w2s_baselines import (
     write_predictions,
 )
 from representation_projection import representation_projection_scores
+from mlp_alignment import mlp_alignment_scores
+from cca_alignment import cca_alignment_scores
+from mlp_rp import mlp_rp_scores, mlp_step1_rp_scores, linstep1_rp_scores
+from robust_linear import robust_linear_residual_scores
+from lda_alignment import lda_alignment_scores
 from excess_loss import excess_loss_kway_scores, option_entropy
 
 
@@ -73,7 +78,7 @@ class LoraExample:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", choices=["dream", "sciq", "paws", "anli", "hellaswag", "reclor", "logiqa2", "wanli", "control"], default="dream")
+    parser.add_argument("--dataset", choices=["dream", "sciq", "paws", "anli", "hellaswag", "reclor", "logiqa2", "wanli", "control", "fevernli", "conjnli", "imppres", "aquarat", "quail", "riddlesense", "scinli"], default="dream")
     parser.add_argument(
         "--anli-round",
         choices=["r1", "r2", "r3"],
@@ -120,6 +125,23 @@ def parse_args() -> argparse.Namespace:
         "epochs * ceil(len(subset)/(batch*grad_accum)). Overrides the fixed compute-matched "
         "--max-train-steps cap.",
     )
+    parser.add_argument("--dump-acts", default="",
+                        help="npz path: dump strong_train weak/strong reps + weak preds/probs + gt "
+                             "for offline method development (alignment scores, diagnostics)")
+    parser.add_argument("--custom-scores-npz", default="",
+                        help="npz with precomputed selection scores (keys cs1..cs4 + weak_preds guard)")
+    parser.add_argument("--mlpalign-bottleneck", type=int, default=0,
+                        help="bottleneck width for the mlpalign net (0 = none; 06/23 sketch used a narrow one)")
+    parser.add_argument("--mlpalign-insample", action="store_true",
+                        help="fit the mlpalign net in-sample (train=test, 06/23 sketch protocol)")
+    parser.add_argument("--mlpalign-epochs", type=int, default=150,
+                        help="training epochs for the mlpalign score MLP (25 = heldout-optimal "
+                             "early stop from the 07/22 diagnostics)")
+    parser.add_argument("--dump-el", default="",
+                        help="npz path: dump per-example el/weak-entropy scores + weak preds/probs + gt "
+                             "(for the el distribution figure); forces el computation")
+    parser.add_argument("--mlpstep1-wd", type=float, default=30.0,
+                        help="weight decay for the mlpstep1 weak-side MLP (sweep peak = 30)")
     parser.add_argument("--rp-reg", type=float, default=0.1,
                         help="Kernel ridge reg for the representation-projection score (rp_high/rp_low).")
     parser.add_argument("--rp-components", type=int, default=0,
@@ -143,13 +165,14 @@ def parse_args() -> argparse.Namespace:
                         help="Token pooling for the kNN/RP representations: 'last' (default) = the "
                              "final non-pad token; 'mean' = average over the non-pad tokens (a "
                              "control). The weak probe stays on last-token regardless.")
-    parser.add_argument("--representation-span", choices=["full", "answer"], default="full",
+    parser.add_argument("--representation-span", choices=["full", "answer", "context"], default="full",
                         help="Which tokens of each prompt the kNN/RP representation pools over: "
-                             "'full' (default) = the whole prompt (question + answer); 'answer' = "
-                             "only the answer part 'A: {candidate}' (mask the question prefix and the "
-                             "yes/no instruction suffix) -- the answer-only ablation. Needs a fast "
-                             "tokenizer. The weak probe/confidence stay on the full prompt so the "
-                             "weak labels are held fixed across the comparison.")
+                             "'full' (default, settled choice) = the whole prompt (question + answer); "
+                             "'answer' = only 'A: {candidate}' (mask the question prefix and the yes/no "
+                             "suffix); 'context' = everything up to and including the 'A:' marker but "
+                             "EXCLUDING the candidate word (Premise/Hypothesis/Q/A:). 'answer'/'context' "
+                             "need a fast tokenizer. The weak probe/confidence stay on the full prompt "
+                             "so the weak labels are held fixed across the comparison.")
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--warmup-steps", type=int, default=0)
@@ -272,6 +295,8 @@ def requested_runs(args: argparse.Namespace) -> list[str]:
         "weak_label_balanced",
         "weak_correct_only",
         "weak_correct_only_balanced",
+        "weak_strong_agree_balanced",
+        "weak_strong_disagree_balanced",
         "rp_weighted",
         "el_weighted",
         "conf_weighted",
@@ -308,8 +333,36 @@ def requested_runs(args: argparse.Namespace) -> list[str]:
             "confidence_low_balanced_f",
             "confidence_cleanhard_balanced_f",
             "curriculum_confhigh_f",
+            "curriculum_rphigh_f",
+            "curriculum_rphigh_byrp_f",
+            "curriculum_rphigh_byrp_asc_f",
             "rp_high_balanced_f",
             "rp_low_balanced_f",
+            "rp_conf_high_balanced_f",
+            "mlpalign_high_balanced_f",
+            "mlpalign_low_balanced_f",
+            "cca_high_balanced_f",
+            "cca_low_balanced_f",
+            "mlprp_high_balanced_f",
+            "mlprp_low_balanced_f",
+            "mlpstep1_high_balanced_f",
+            "mlpstep1_low_balanced_f",
+            "linstep1_high_balanced_f",
+            "linstep1_low_balanced_f",
+            "softrp_high_balanced_f",
+            "softrp_low_balanced_f",
+            "cs1_high_balanced_f", "cs1_low_balanced_f",
+            "cs2_high_balanced_f", "cs2_low_balanced_f",
+            "cs3_high_balanced_f", "cs3_low_balanced_f",
+            "cs4_high_balanced_f", "cs4_low_balanced_f",
+            "lda_high_balanced_f",
+            "lda_low_balanced_f",
+            "ccarobust_high_balanced_f",
+            "ccarobust_low_balanced_f",
+            "l2robust_high_balanced_f",
+            "l2robust_low_balanced_f",
+            "l2resid_high_balanced_f",
+            "l2resid_low_balanced_f",
             "el_high_balanced_f",
             "el_low_balanced_f",
             "conf_entropy_high_balanced_f",
@@ -962,6 +1015,403 @@ def load_control_multichoice_eval(n_questions: int, seed: int) -> list[dict]:
     return out
 
 
+FEVER_REL2IDX = {"SUPPORTS": 0, "NOT ENOUGH INFO": 1, "REFUTES": 2}
+FEVER_LABELS = ["supported", "not enough info", "refuted"]
+
+
+def format_fevernli_paper_style(ex: dict, row_id: int, rng: random.Random) -> dict:
+    gold = FEVER_REL2IDX.get(str(ex["fever_gold_label"]))
+    ev = str(ex.get("premise", "")).strip()
+    cl = str(ex.get("hypothesis", "")).strip()
+    if gold is None or not ev or not cl:
+        return {"id": "", "source_id": "", "txt": "", "labels": 0, "gt_labels": 0,
+                "mc_options": [], "mc_correct": 0}
+    hard_label = int(rng.random() < 0.5)
+    candidate = FEVER_LABELS[gold] if hard_label else rng.choice(
+        [FEVER_LABELS[k] for k in range(3) if k != gold]
+    )
+    base = f"Evidence: {ev}\nClaim: {cl}\n"
+    q = "Q: Based on the evidence, the claim is? A:"
+    return {
+        "id": f"fevernli-{row_id}", "source_id": f"fevernli-{row_id}",
+        "txt": f"{base}{q} {candidate}",
+        "labels": hard_label, "gt_labels": hard_label,
+        "mc_options": [f"{base}{q} {FEVER_LABELS[k]}" for k in range(3)],
+        "mc_correct": gold,
+    }
+
+
+def load_and_process_fevernli_split(split: str, n_docs: int, seed: int) -> Dataset:
+    raw = load_dataset("pietrolesci/nli_fever", split=split).shuffle(seed=seed)
+    raw = raw.filter(lambda ex: str(ex["fever_gold_label"]) in FEVER_REL2IDX)
+    rng = random.Random(seed)
+    rows = [format_fevernli_paper_style(ex, i, rng) for i, ex in enumerate(raw)]
+    ds = Dataset.from_list(rows).filter(lambda ex: ex["txt"] != "")
+    ds = balance_binary_dataset(ds, seed)
+    if len(ds) < n_docs:
+        print(f"fevernli/{split} has < {n_docs} docs after balancing, using all {len(ds)}")
+    return ds.select(range(min(n_docs, len(ds))))
+
+
+def load_paper_fevernli_splits(n_train: int, n_val: int, n_test: int, seed: int) -> SplitBundle:
+    # nli_fever: labeled 'train' + 'dev' (test is unlabeled). Carve test from dev.
+    train_pool = load_and_process_fevernli_split("train", n_train + n_val, seed)
+    test = load_and_process_fevernli_split("dev", n_test, seed + 2)
+    val_count = min(n_val, len(train_pool))
+    val = train_pool.select(range(val_count))
+    train = train_pool.select(range(val_count, len(train_pool)))
+    halves = train.train_test_split(test_size=0.5, seed=seed)
+    return SplitBundle(weak_train=halves["train"], strong_train=halves["test"], val=val, test=test)
+
+
+def load_fevernli_multichoice_eval(n_questions: int, seed: int) -> list[dict]:
+    raw = load_dataset("pietrolesci/nli_fever", split="dev").shuffle(seed=seed)
+    rng = random.Random(seed + 7)
+    out: list[dict] = []
+    n = 0
+    for ex in raw:
+        if n >= n_questions:
+            break
+        gold = FEVER_REL2IDX.get(str(ex["fever_gold_label"]))
+        ev = str(ex.get("premise", "")).strip()
+        cl = str(ex.get("hypothesis", "")).strip()
+        if gold is None or not ev or not cl:
+            continue
+        base = f"Evidence: {ev}\nClaim: {cl}\n"
+        q = "Q: Based on the evidence, the claim is? A:"
+        for slot, ri in enumerate(rng.sample(range(3), 3)):
+            out.append({"id": f"fevernli-mc-{n}-{slot}", "source_id": f"fevernli-mc-{n}",
+                        "txt": f"{base}{q} {FEVER_LABELS[ri]}", "labels": int(ri == gold)})
+        n += 1
+    return out
+
+
+CONJNLI_TRAIN_URL = "https://raw.githubusercontent.com/swarnaHub/ConjNLI/master/data/NLI/adversarial_train_15k.tsv"
+CONJNLI_DEV_URL = "https://raw.githubusercontent.com/swarnaHub/ConjNLI/master/data/NLI/conj_dev.tsv"
+CONJNLI_REL2IDX = {"entailment": 0, "neutral": 1, "contradiction": 2}
+
+
+def _conjnli_rows(url: str):
+    ds = load_dataset("csv", data_files={"d": url}, delimiter="\t")["d"]
+    for ex in ds:
+        keys = list(ex.keys())
+        prem = str(ex.get("Premise", ex.get(keys[0], "")) or "").strip()
+        hyp = str(ex.get("Hypothesis", ex.get(keys[1], "")) or "").strip()
+        lab = str(ex.get("Label", ex.get(keys[2], "")) or "").strip().lower()
+        gold = CONJNLI_REL2IDX.get(lab)
+        if gold is None or not prem or not hyp:
+            continue
+        yield prem, hyp, gold
+
+
+def format_conjnli_paper_style(prem: str, hyp: str, gold: int, row_id: int, rng: random.Random) -> dict:
+    hard_label = int(rng.random() < 0.5)
+    candidate = ANLI_LABELS[gold] if hard_label else rng.choice(
+        [name for key, name in ANLI_LABELS.items() if key != gold]
+    )
+    base = f"Premise: {prem}\nHypothesis: {hyp}\n"
+    q = "Q: What is the relationship from the premise to the hypothesis? A:"
+    return {
+        "id": f"conjnli-{row_id}", "source_id": f"conjnli-{row_id}",
+        "txt": f"{base}{q} {candidate}",
+        "labels": hard_label, "gt_labels": hard_label,
+        "mc_options": [f"{base}{q} {ANLI_LABELS[k]}" for k in (0, 1, 2)],
+        "mc_correct": gold,
+    }
+
+
+def load_and_process_conjnli_split(url: str, n_docs: int, seed: int) -> Dataset:
+    rows = list(_conjnli_rows(url))
+    rng0 = random.Random(seed)
+    rng0.shuffle(rows)
+    rng = random.Random(seed)
+    formatted = [format_conjnli_paper_style(p, h, g, i, rng) for i, (p, h, g) in enumerate(rows)]
+    ds = Dataset.from_list(formatted).filter(lambda ex: ex["txt"] != "")
+    ds = balance_binary_dataset(ds, seed)
+    if len(ds) < n_docs:
+        print(f"conjnli has < {n_docs} docs after balancing, using all {len(ds)}")
+    return ds.select(range(min(n_docs, len(ds))))
+
+
+def load_paper_conjnli_splits(n_train: int, n_val: int, n_test: int, seed: int) -> SplitBundle:
+    # Train pool = the authors' 15k adversarial (silver-label) train file; test carved from
+    # the human-labeled dev (623 rows). NOTE: silver train labels -> the GT/oracle arms are
+    # only as good as the silver labels on this bed.
+    train_pool = load_and_process_conjnli_split(CONJNLI_TRAIN_URL, n_train + n_val, seed)
+    test = load_and_process_conjnli_split(CONJNLI_DEV_URL, n_test, seed + 2)
+    val_count = min(n_val, len(train_pool))
+    val = train_pool.select(range(val_count))
+    train = train_pool.select(range(val_count, len(train_pool)))
+    halves = train.train_test_split(test_size=0.5, seed=seed)
+    return SplitBundle(weak_train=halves["train"], strong_train=halves["test"], val=val, test=test)
+
+
+def load_conjnli_multichoice_eval(n_questions: int, seed: int) -> list[dict]:
+    rows = list(_conjnli_rows(CONJNLI_DEV_URL))
+    random.Random(seed).shuffle(rows)
+    rng = random.Random(seed + 7)
+    out: list[dict] = []
+    for n_i, (prem, hyp, gold) in enumerate(rows[:n_questions]):
+        base = f"Premise: {prem}\nHypothesis: {hyp}\n"
+        q = "Q: What is the relationship from the premise to the hypothesis? A:"
+        for slot, ri in enumerate(rng.sample(range(3), 3)):
+            out.append({"id": f"conjnli-mc-{n_i}-{slot}", "source_id": f"conjnli-mc-{n_i}",
+                        "txt": f"{base}{q} {ANLI_LABELS[ri]}", "labels": int(ri == gold)})
+    return out
+
+
+IMPPRES_CONFIGS = [
+    "presupposition_all_n_presupposition", "presupposition_both_presupposition",
+    "presupposition_change_of_state", "presupposition_cleft_existence",
+    "presupposition_cleft_uniqueness", "presupposition_only_presupposition",
+    "presupposition_possessed_definites_existence", "presupposition_possessed_definites_uniqueness",
+    "presupposition_question_presupposition",
+]
+
+
+def _imppres_rows(seed: int):
+    """Merged presupposition-section rows -> (premise, hypothesis, gold 0/1/2), shuffled."""
+    import random as _random
+
+    rows = []
+    for cfg in IMPPRES_CONFIGS:
+        dd = load_dataset("facebook/imppres", cfg)
+        ds = dd[list(dd.keys())[0]]
+        for ex in ds:
+            try:
+                gold = int(str(ex.get("gold_label", "")).strip())
+            except ValueError:
+                continue
+            prem = str(ex.get("premise", "")).strip()
+            hyp = str(ex.get("hypothesis", "")).strip()
+            if gold not in (0, 1, 2) or not prem or not hyp:
+                continue
+            rows.append((prem, hyp, gold))
+    _random.Random(seed).shuffle(rows)
+    return rows
+
+
+def format_imppres_paper_style(prem: str, hyp: str, gold: int, row_id: int, rng: random.Random) -> dict:
+    hard_label = int(rng.random() < 0.5)
+    candidate = ANLI_LABELS[gold] if hard_label else rng.choice(
+        [name for key, name in ANLI_LABELS.items() if key != gold]
+    )
+    base = f"Premise: {prem}\nHypothesis: {hyp}\n"
+    q = "Q: What is the relationship from the premise to the hypothesis? A:"
+    return {
+        "id": f"imppres-{row_id}", "source_id": f"imppres-{row_id}",
+        "txt": f"{base}{q} {candidate}",
+        "labels": hard_label, "gt_labels": hard_label,
+        "mc_options": [f"{base}{q} {ANLI_LABELS[k]}" for k in (0, 1, 2)],
+        "mc_correct": gold,
+    }
+
+
+def load_paper_imppres_splits(n_train: int, n_val: int, n_test: int, seed: int) -> SplitBundle:
+    # ImpPres is an eval-only templated corpus (~17k presupposition rows); carve
+    # disjoint train/test pools from one shuffle. Templated data -> watch for
+    # template memorization in Stage-2 (GT arm may saturate).
+    rows = _imppres_rows(seed)
+    test_rows = rows[:max(1, n_test * 2)]
+    pool_rows = rows[max(1, n_test * 2):]
+    rng = random.Random(seed)
+    fmt_pool = [format_imppres_paper_style(p, h, g, i, rng) for i, (p, h, g) in enumerate(pool_rows)]
+    fmt_test = [format_imppres_paper_style(p, h, g, 10_000_000 + i, rng) for i, (p, h, g) in enumerate(test_rows)]
+    pool = balance_binary_dataset(Dataset.from_list(fmt_pool).filter(lambda ex: ex["txt"] != ""), seed)
+    test = balance_binary_dataset(Dataset.from_list(fmt_test).filter(lambda ex: ex["txt"] != ""), seed + 2)
+    pool = pool.select(range(min(n_train + n_val, len(pool))))
+    test = test.select(range(min(n_test, len(test))))
+    val_count = min(n_val, len(pool))
+    val = pool.select(range(val_count))
+    train = pool.select(range(val_count, len(pool)))
+    halves = train.train_test_split(test_size=0.5, seed=seed)
+    return SplitBundle(weak_train=halves["train"], strong_train=halves["test"], val=val, test=test)
+
+
+def load_imppres_multichoice_eval(n_questions: int, seed: int) -> list[dict]:
+    rows = _imppres_rows(seed)[:n_questions]
+    rng = random.Random(seed + 7)
+    out: list[dict] = []
+    for n_i, (prem, hyp, gold) in enumerate(rows):
+        base = f"Premise: {prem}\nHypothesis: {hyp}\n"
+        q = "Q: What is the relationship from the premise to the hypothesis? A:"
+        for slot, ri in enumerate(rng.sample(range(3), 3)):
+            out.append({"id": f"imppres-mc-{n_i}-{slot}", "source_id": f"imppres-mc-{n_i}",
+                        "txt": f"{base}{q} {ANLI_LABELS[ri]}", "labels": int(ri == gold)})
+    return out
+
+
+def _aquarat_rows(splits, seed: int):
+    """AQuA-RAT rows -> (question, [5 option texts], gold_idx), merged over the given splits."""
+    import random as _random
+
+    rows = []
+    for sp in splits:
+        ds = load_dataset("deepmind/aqua_rat", "raw", split=sp)
+        for ex in ds:
+            opts_raw = [str(o).strip() for o in ex.get("options", [])]
+            options = [o.split(")", 1)[1].strip() if ")" in o else o for o in opts_raw]
+            gold = "ABCDE".find(str(ex.get("correct", "")).strip())
+            q = str(ex.get("question", "")).strip()
+            if not (0 <= gold < len(options)) or not q or len(options) != 5:
+                continue
+            rows.append((q, options, gold))
+    _random.Random(seed).shuffle(rows)
+    return rows
+
+
+def format_aquarat_paper_style(q: str, options: list, gold: int, row_id: int, rng: random.Random) -> dict:
+    hard_label = int(rng.random() < 0.5)
+    cand = options[gold] if hard_label else options[rng.choice([k for k in range(len(options)) if k != gold])]
+    base = f"Q: {q} A:"
+    return {
+        "id": f"aquarat-{row_id}", "source_id": f"aquarat-{row_id}",
+        "txt": f"{base} {cand}",
+        "labels": hard_label, "gt_labels": hard_label,
+        "mc_options": [f"{base} {o}" for o in options],
+        "mc_correct": gold,
+    }
+
+
+def load_paper_aquarat_splits(n_train: int, n_val: int, n_test: int, seed: int) -> SplitBundle:
+    # 97k crowd-amplified train pool; official test+validation (254+254) merged as the test set.
+    train_rows = _aquarat_rows(["train"], seed)[: (n_train + n_val) * 2]
+    test_rows = _aquarat_rows(["test", "validation"], seed + 2)
+    rng = random.Random(seed)
+    pool = [format_aquarat_paper_style(q, o, g, i, rng) for i, (q, o, g) in enumerate(train_rows)]
+    tst = [format_aquarat_paper_style(q, o, g, 10_000_000 + i, rng) for i, (q, o, g) in enumerate(test_rows)]
+    pool_ds = balance_binary_dataset(Dataset.from_list(pool).filter(lambda ex: ex["txt"] != ""), seed)
+    test_ds = balance_binary_dataset(Dataset.from_list(tst).filter(lambda ex: ex["txt"] != ""), seed + 2)
+    pool_ds = pool_ds.select(range(min(n_train + n_val, len(pool_ds))))
+    test_ds = test_ds.select(range(min(n_test, len(test_ds))))
+    val_count = min(n_val, len(pool_ds))
+    val = pool_ds.select(range(val_count))
+    train = pool_ds.select(range(val_count, len(pool_ds)))
+    halves = train.train_test_split(test_size=0.5, seed=seed)
+    return SplitBundle(weak_train=halves["train"], strong_train=halves["test"], val=val, test=test_ds)
+
+
+def load_aquarat_multichoice_eval(n_questions: int, seed: int) -> list[dict]:
+    rows = _aquarat_rows(["test", "validation"], seed)[:n_questions]
+    rng = random.Random(seed + 7)
+    out: list[dict] = []
+    for n_i, (q, options, gold) in enumerate(rows):
+        base = f"Q: {q} A:"
+        for slot, ri in enumerate(rng.sample(range(len(options)), len(options))):
+            out.append({"id": f"aquarat-mc-{n_i}-{slot}", "source_id": f"aquarat-mc-{n_i}",
+                        "txt": f"{base} {options[ri]}", "labels": int(ri == gold)})
+    return out
+
+
+def _quail_rows(split: str, seed: int):
+    import random as _random
+
+    ds = load_dataset("textmachinelab/quail", "default", split=split, revision="refs/convert/parquet")
+    rows = []
+    for ex in ds:
+        options = [str(o).strip() for o in ex.get("answers", [])]
+        gold = ex.get("correct_answer_id", -1)
+        c = str(ex.get("context", "")).strip()
+        q = str(ex.get("question", "")).strip()
+        if not isinstance(gold, int) or not (0 <= gold < len(options)) or not c or not q:
+            continue
+        rows.append((f"{c}\nQ: {q} A:", options, gold))
+    _random.Random(seed).shuffle(rows)
+    return rows
+
+
+def _riddlesense_rows(split: str, seed: int):
+    import random as _random
+
+    ds = load_dataset("INK-USC/riddle_sense", "default", split=split, revision="refs/convert/parquet")
+    rows = []
+    for ex in ds:
+        labels = list(ex["choices"]["label"])
+        options = [str(t).strip() for t in ex["choices"]["text"]]
+        key = str(ex["answerKey"]).strip()
+        q = str(ex.get("question", "")).strip()
+        if key not in labels or not options or not q:
+            continue
+        rows.append((f"Q: {q} A:", options, labels.index(key)))
+    _random.Random(seed).shuffle(rows)
+    return rows
+
+
+def _format_mc_rows_paper_style(rows, prefix: str, rng: random.Random, id_base: int = 0):
+    out = []
+    for i, (base, options, gold) in enumerate(rows):
+        hard_label = int(rng.random() < 0.5)
+        cand = options[gold] if hard_label else options[rng.choice([k for k in range(len(options)) if k != gold])]
+        out.append({
+            "id": f"{prefix}-{id_base + i}", "source_id": f"{prefix}-{id_base + i}",
+            "txt": f"{base} {cand}",
+            "labels": hard_label, "gt_labels": hard_label,
+            "mc_options": [f"{base} {o}" for o in options],
+            "mc_correct": gold,
+        })
+    return out
+
+
+def _generic_mc_splits(train_rows, test_rows, prefix, n_train, n_val, n_test, seed) -> SplitBundle:
+    rng = random.Random(seed)
+    pool = _format_mc_rows_paper_style(train_rows, prefix, rng)
+    tst = _format_mc_rows_paper_style(test_rows, prefix, rng, id_base=10_000_000)
+    pool_ds = balance_binary_dataset(Dataset.from_list(pool).filter(lambda ex: ex["txt"] != ""), seed)
+    test_ds = balance_binary_dataset(Dataset.from_list(tst).filter(lambda ex: ex["txt"] != ""), seed + 2)
+    pool_ds = pool_ds.select(range(min(n_train + n_val, len(pool_ds))))
+    test_ds = test_ds.select(range(min(n_test, len(test_ds))))
+    val_count = min(n_val, len(pool_ds))
+    val = pool_ds.select(range(val_count))
+    train = pool_ds.select(range(val_count, len(pool_ds)))
+    halves = train.train_test_split(test_size=0.5, seed=seed)
+    return SplitBundle(weak_train=halves["train"], strong_train=halves["test"], val=val, test=test_ds)
+
+
+def _generic_mc_eval(rows, prefix, n_questions, seed) -> list[dict]:
+    rng = random.Random(seed + 7)
+    out: list[dict] = []
+    for n_i, (base, options, gold) in enumerate(rows[:n_questions]):
+        for slot, ri in enumerate(rng.sample(range(len(options)), len(options))):
+            out.append({"id": f"{prefix}-mc-{n_i}-{slot}", "source_id": f"{prefix}-mc-{n_i}",
+                        "txt": f"{base} {options[ri]}", "labels": int(ri == gold)})
+    return out
+
+
+def _scinli_rows(split: str, seed: int):
+    import random as _random
+
+    ds = load_dataset("tasksource/scinli", split=split)
+    opts = ["entailment", "contrasting", "reasoning", "neutral"]
+    lab2idx = {o: i for i, o in enumerate(opts)}
+    rows = []
+    for ex in ds:
+        gold = lab2idx.get(str(ex.get("label", "")).strip().lower())
+        s1 = str(ex.get("sentence1", "")).strip()
+        s2 = str(ex.get("sentence2", "")).strip()
+        if gold is None or not s1 or not s2:
+            continue
+        base = (f"Sentence 1: {s1}\nSentence 2: {s2}\n"
+                "Q: What is the relationship from sentence 1 to sentence 2? A:")
+        rows.append((base, list(opts), gold))
+    _random.Random(seed).shuffle(rows)
+    return rows
+
+
+def load_paper_scinli_splits(n_train, n_val, n_test, seed) -> SplitBundle:
+    return _generic_mc_splits(_scinli_rows("train", seed), _scinli_rows("test", seed + 2),
+                              "scinli", n_train, n_val, n_test, seed)
+
+
+def load_paper_quail_splits(n_train, n_val, n_test, seed) -> SplitBundle:
+    return _generic_mc_splits(_quail_rows("train", seed), _quail_rows("validation", seed + 2),
+                              "quail", n_train, n_val, n_test, seed)
+
+
+def load_paper_riddlesense_splits(n_train, n_val, n_test, seed) -> SplitBundle:
+    return _generic_mc_splits(_riddlesense_rows("train", seed), _riddlesense_rows("validation", seed + 2),
+                              "riddlesense", n_train, n_val, n_test, seed)
+
+
 def load_paper_style_splits(args: argparse.Namespace) -> SplitBundle:
     if args.dataset == "dream":
         return load_paper_dream_splits(args.n_train, args.n_val, args.n_test, args.seed)
@@ -989,6 +1439,20 @@ def load_paper_style_splits(args: argparse.Namespace) -> SplitBundle:
         return load_paper_wanli_splits(args.n_train, args.n_val, args.n_test, args.seed)
     if args.dataset == "control":
         return load_paper_control_splits(args.n_train, args.n_val, args.n_test, args.seed)
+    if args.dataset == "fevernli":
+        return load_paper_fevernli_splits(args.n_train, args.n_val, args.n_test, args.seed)
+    if args.dataset == "conjnli":
+        return load_paper_conjnli_splits(args.n_train, args.n_val, args.n_test, args.seed)
+    if args.dataset == "imppres":
+        return load_paper_imppres_splits(args.n_train, args.n_val, args.n_test, args.seed)
+    if args.dataset == "aquarat":
+        return load_paper_aquarat_splits(args.n_train, args.n_val, args.n_test, args.seed)
+    if args.dataset == "quail":
+        return load_paper_quail_splits(args.n_train, args.n_val, args.n_test, args.seed)
+    if args.dataset == "riddlesense":
+        return load_paper_riddlesense_splits(args.n_train, args.n_val, args.n_test, args.seed)
+    if args.dataset == "scinli":
+        return load_paper_scinli_splits(args.n_train, args.n_val, args.n_test, args.seed)
     raise ValueError(f"Unsupported dataset: {args.dataset}")
 
 
@@ -1059,6 +1523,55 @@ def format_summary(args: argparse.Namespace) -> dict[str, str]:
             "candidate_text": "'Premise: ...\\nHypothesis: ...\\nQ: What is the relationship ...? A: {candidate}'",
             "label": "1 if the candidate relation (entailment/neutral/contradiction) is the gold ConTRoL label, else 0",
             "takeaway": "This run uses ConTRoL (contextual-reasoning adversarial NLI) as binary candidate-relation correctness -> low-base testbed search.",
+        }
+    if args.dataset == "fevernli":
+        return {
+            "task": "paper-style binary candidate-relation correctness (FEVER-NLI)",
+            "candidate_text": "'Evidence: ...\\nClaim: ...\\nQ: Based on the evidence, the claim is? A: {candidate}'",
+            "label": "1 if the candidate verdict (supported/not enough info/refuted) is the gold FEVER label, else 0",
+            "takeaway": "This run uses FEVER recast as 3-way fact-verification NLI (candidate-verdict correctness) -> low-base testbed search.",
+        }
+    if args.dataset == "conjnli":
+        return {
+            "task": "paper-style binary candidate-relation correctness (ConjNLI)",
+            "candidate_text": "'Premise: ...\\nHypothesis: ...\\nQ: What is the relationship ...? A: {candidate}'",
+            "label": "1 if the candidate relation is the ConjNLI label, else 0",
+            "takeaway": "This run uses ConjNLI (adversarial conjunction NLI; silver 15k train pool, human dev as test) -> low-base testbed search.",
+        }
+    if args.dataset == "imppres":
+        return {
+            "task": "paper-style binary candidate-relation correctness (ImpPres)",
+            "candidate_text": "'Premise: ...\\nHypothesis: ...\\nQ: What is the relationship ...? A: {candidate}'",
+            "label": "1 if the candidate relation is the ImpPres gold label, else 0",
+            "takeaway": "This run uses ImpPres presupposition NLI (templated, structurally adversarial) -> low-base testbed search; watch template memorization.",
+        }
+    if args.dataset == "aquarat":
+        return {
+            "task": "paper-style binary candidate-answer correctness (AQuA-RAT)",
+            "candidate_text": "'Q: {math word problem} A: {candidate option}'",
+            "label": "1 if the candidate is the correct option, else 0",
+            "takeaway": "This run uses AQuA-RAT (5-option math word problems; crowd-amplified pool) -> trio-PASS(CAUTION) validation; preregistered expectation is the ReClor outcome.",
+        }
+    if args.dataset == "quail":
+        return {
+            "task": "paper-style binary candidate-answer correctness (QuAIL)",
+            "candidate_text": "'{context}\\nQ: {question} A: {candidate}'",
+            "label": "1 if the candidate is the correct option, else 0",
+            "takeaway": "This run uses QuAIL (4-option multi-domain RC) under the relaxed base<0.70 bar (discrim .698) -> needs GT>=.8 headroom.",
+        }
+    if args.dataset == "riddlesense":
+        return {
+            "task": "paper-style binary candidate-answer correctness (RiddleSense)",
+            "candidate_text": "'Q: {riddle} A: {candidate}'",
+            "label": "1 if the candidate is the correct option, else 0",
+            "takeaway": "This run uses RiddleSense (5-option human riddles) under the relaxed base<0.70 bar (discrim .657).",
+        }
+    if args.dataset == "scinli":
+        return {
+            "task": "paper-style binary candidate-relation correctness (SciNLI)",
+            "candidate_text": "'Sentence 1: ...\\nSentence 2: ...\\nQ: What is the relationship ...? A: {candidate}'",
+            "label": "1 if the candidate relation (entailment/contrasting/reasoning/neutral) is the SciNLI label, else 0",
+            "takeaway": "This run uses SciNLI (4-way scientific-paper NLI, 107k, human-written) -> best trio profile of round 4 (probe .588, base .425).",
         }
     raise ValueError(f"Unsupported dataset: {args.dataset}")
 
@@ -1205,6 +1718,7 @@ def extract_all_activations(
     pooling: str = "last",
     answer_span: bool = False,
     answer_suffix: str = "",
+    span_kind: str = "answer",
 ) -> dict[str, torch.Tensor]:
     sizes = {name: len(texts_by_split[name]) for name in ["weak_train", "strong_train", "test"]}
     all_texts = texts_by_split["weak_train"] + texts_by_split["strong_train"] + texts_by_split["test"]
@@ -1220,6 +1734,7 @@ def extract_all_activations(
         pooling=pooling,
         answer_span=answer_span,
         answer_suffix=answer_suffix,
+        span_kind=span_kind,
     )
     return slice_activations(acts, sizes)
 
@@ -1916,8 +2431,8 @@ def compute_el_kway_scores(
     once per data seed and reused across train seeds and bands.
 
     Returns (el_scores, weak_option_entropy): both row-aligned to strong_train. The weak
-    option entropy H_weak(options) is the single-model (weak-only) confidence the meeting
-    converged on -- low entropy = the weak teacher is sure which option is the answer.
+    option entropy H_weak(options) is the settled single-model (weak-only) confidence
+    variant -- low entropy = the weak teacher is sure which option is the answer.
     el is exactly H_weak - H_strong, so this is el with the strong term set to 0; it backs
     the conf_entropy_* selectors. Computed here to reuse the weak model pass.
     """
@@ -1969,7 +2484,29 @@ def compute_el_kway_scores(
     weak_entropy_arr = np.asarray(
         [weak_entropy_by_q.get(src, 0.0) for src in source_ids], dtype=np.float64
     )
-    return el_arr, weak_entropy_arr
+    # Loss-difference el (the RHO-LOSS-style form): per question, take the weak model's own
+    # pick yhat = argmax of its option distribution, and compare surprisals at that pick:
+    # elloss = -log q_s[yhat] + log q_w[yhat] = loss_strong - loss_weak, no gold needed.
+    # (by_q lists may hold duplicate K-blocks when a question spans several rows; slice the
+    # first K -- forward passes are deterministic, so the blocks are identical copies.)
+    mc_correct = (list(strong_train_ds["mc_correct"])
+                  if "mc_correct" in strong_train_ds.column_names else [-1] * len(source_ids))
+    elloss_by_q, pick_by_q = {}, {}
+    kk = {src: len(opts) for src, opts in zip(source_ids, mc_options)}
+    for src in set(source_ids):
+        K = max(kk[src], 1)
+        qw = np.clip(np.asarray(weak_by_q[src][:K], dtype=np.float64), 1e-12, None)
+        qs = np.clip(np.asarray(strong_by_q[src][:K], dtype=np.float64), 1e-12, None)
+        qw, qs = qw / qw.sum(), qs / qs.sum()
+        yhat = int(np.argmax(qw))
+        pick_by_q[src] = yhat
+        elloss_by_q[src] = float(np.log(qw[yhat]) - np.log(qs[yhat]))
+    el_extras = {
+        "elloss": np.asarray([elloss_by_q.get(src, 0.0) for src in source_ids], dtype=np.float64),
+        "weak_pick": np.asarray([pick_by_q.get(src, -1) for src in source_ids], dtype=np.int64),
+        "gold_opt": np.asarray(mc_correct, dtype=np.int64),
+    }
+    return el_arr, weak_entropy_arr, el_extras
 
 
 def main() -> None:
@@ -2082,7 +2619,7 @@ def main() -> None:
     # on the default end-layer / last-token / full-prompt reps (extracted above); only the kNN and
     # RP representations move, so the weak labels (and the oracle) are held fixed across the
     # comparison. The default (end, last, full) reuses the already-extracted acts (no extra cost).
-    answer_span = args.representation_span == "answer"
+    answer_span = args.representation_span in ("answer", "context")
     rep_is_default = (
         args.representation_layer == "end"
         and args.representation_pooling == "last"
@@ -2098,6 +2635,7 @@ def main() -> None:
             f"extract weak activations ({rep_tag})",
             layer=args.representation_layer, pooling=args.representation_pooling,
             answer_span=answer_span, answer_suffix=args.answer_suffix,
+            span_kind=args.representation_span,
         )
         rep_strong_acts = extract_all_activations(
             args.strong_model, texts, device, args.torch_dtype,
@@ -2105,6 +2643,7 @@ def main() -> None:
             f"extract strong activations ({rep_tag})",
             layer=args.representation_layer, pooling=args.representation_pooling,
             answer_span=answer_span, answer_suffix=args.answer_suffix,
+            span_kind=args.representation_span,
         )
     knn_stats = compute_weak_train_knn_stats(
         rep_strong_acts["weak_train"],
@@ -2112,6 +2651,17 @@ def main() -> None:
         weak_correct_weak_train,
         args.knn_k,
     )
+    if getattr(args, "dump_acts", ""):
+        np.savez_compressed(
+            args.dump_acts,
+            weak=np.asarray(rep_weak_acts["strong_train"], dtype=np.float32),
+            strong=np.asarray(rep_strong_acts["strong_train"], dtype=np.float32),
+            weak_preds=np.asarray(weak_preds_strong, dtype=np.int64),
+            weak_probs=np.asarray(weak_probs_strong, dtype=np.float32),
+            gt=np.asarray(strong_train_labels, dtype=np.int64),
+        )
+        print(f"[dump-acts] wrote {args.dump_acts}")
+
     rp_scores = representation_projection_scores(
         np.asarray(rep_weak_acts["strong_train"], dtype=np.float64),
         np.asarray(rep_strong_acts["strong_train"], dtype=np.float64),
@@ -2119,6 +2669,124 @@ def main() -> None:
         reg=args.rp_reg,
         n_components=(args.rp_components or None),
     )
+    # MLP alignment-residual score (the "MLP projection" alternative alignment): out-of-fold
+    # ||f(h_w) - h_s|| from a small cross-fitted MLP. Label-free; only computed when requested.
+    mlpalign_scores = None
+    if any(r.startswith("mlpalign_") for r in runs):
+        print("[mlpalign] fitting cross-fitted weak->strong MLP alignment (5 folds)...")
+        mlpalign_scores = mlp_alignment_scores(
+            np.asarray(rep_weak_acts["strong_train"], dtype=np.float32),
+            np.asarray(rep_strong_acts["strong_train"], dtype=np.float32),
+            n_folds=5, seed=args.seed, device=str(device),
+            epochs=args.mlpalign_epochs,
+            bottleneck=(args.mlpalign_bottleneck or None),
+            insample=args.mlpalign_insample,
+        )
+        print(f"[mlpalign] scores: mean {mlpalign_scores.mean():.3f} std {mlpalign_scores.std():.3f}")
+    # CCA alignment-disagreement score (cross-fitted regularized linear CCA); label-free.
+    cca_scores = None
+    if any(r.startswith("cca_") for r in runs):
+        print("[cca] fitting cross-fitted CCA alignment (5 folds)...")
+        cca_scores = cca_alignment_scores(
+            np.asarray(rep_weak_acts["strong_train"], dtype=np.float64),
+            np.asarray(rep_strong_acts["strong_train"], dtype=np.float64),
+            n_folds=5, seed=args.seed,
+        )
+        print(f"[cca] scores: mean {cca_scores.mean():.3f} std {cca_scores.std():.3f}")
+    # Robust variants (trim-refit): the whiteboard's outlier-discarding ridge + robust CCA.
+    cca_robust_scores = None
+    if any(r.startswith("ccarobust_") for r in runs):
+        print("[ccarobust] fitting robust (trim-refit) CCA...")
+        cca_robust_scores = cca_alignment_scores(
+            np.asarray(rep_weak_acts["strong_train"], dtype=np.float64),
+            np.asarray(rep_strong_acts["strong_train"], dtype=np.float64),
+            n_folds=5, seed=args.seed, trim_frac=0.1,
+        )
+        print(f"[ccarobust] mean {cca_robust_scores.mean():.3f} std {cca_robust_scores.std():.3f}")
+    l2robust_scores = None
+    if any(r.startswith("l2robust_") for r in runs):
+        print("[l2robust] fitting robust (trim-refit) ridge residuals...")
+        l2robust_scores = robust_linear_residual_scores(
+            np.asarray(rep_weak_acts["strong_train"], dtype=np.float64),
+            np.asarray(rep_strong_acts["strong_train"], dtype=np.float64),
+            n_folds=5, seed=args.seed, trim_frac=0.1,
+        )
+        print(f"[l2robust] mean {l2robust_scores.mean():.3f} std {l2robust_scores.std():.3f}")
+    # Hybrid nonlinear rp: kernel-ridge weak-side (same as rp) + MLP-ensemble strong-side.
+    # Label-conditioned; isolates what a nonlinear strong-side projection buys over rp.
+    mlprp_scores = None
+    if any(r.startswith("mlprp_") for r in runs):
+        print("[mlprp] fitting hybrid ridge+MLP rp (5 folds x 3 ensemble)...")
+        mlprp_scores = mlp_rp_scores(
+            np.asarray(rep_weak_acts["strong_train"], dtype=np.float32),
+            np.asarray(rep_strong_acts["strong_train"], dtype=np.float32),
+            weak_preds_strong,
+            n_folds=5, seed=args.seed, device=str(device), ridge_reg=args.rp_reg,
+        )
+        print(f"[mlprp] scores: mean {mlprp_scores.mean():.4f} std {mlprp_scores.std():.4f}")
+    # Swapped hybrid: heavily weight-decayed MLP weak-side + ridge strong-side (07/22
+    # follow-up; wd from --mlpstep1-wd, default the sweep's peak-agreement setting).
+    mlpstep1_scores = None
+    if any(r.startswith("mlpstep1_") for r in runs):
+        print(f"[mlpstep1] fitting MLP(wd={args.mlpstep1_wd})+ridge rp (5 folds x 3 ensemble)...")
+        mlpstep1_scores = mlp_step1_rp_scores(
+            np.asarray(rep_weak_acts["strong_train"], dtype=np.float32),
+            np.asarray(rep_strong_acts["strong_train"], dtype=np.float32),
+            weak_preds_strong,
+            n_folds=5, seed=args.seed, device=str(device), ridge_reg=args.rp_reg,
+            weight_decay=args.mlpstep1_wd,
+        )
+        print(f"[mlpstep1] scores: mean {mlpstep1_scores.mean():.4f} std {mlpstep1_scores.std():.4f}")
+    # Pure cross-fit ablation: rp's step-1 kernel ridge fitted out-of-fold, step 2 unchanged.
+    linstep1_scores = None
+    if any(r.startswith("linstep1_") for r in runs):
+        print("[linstep1] fitting oof kernel-ridge step-1 rp (5 folds, closed form)...")
+        linstep1_scores = linstep1_rp_scores(
+            np.asarray(rep_weak_acts["strong_train"], dtype=np.float64),
+            np.asarray(rep_strong_acts["strong_train"], dtype=np.float64),
+            weak_preds_strong,
+            n_folds=5, seed=args.seed, ridge_reg=args.rp_reg,
+        )
+        print(f"[linstep1] scores: mean {linstep1_scores.mean():.4f} std {linstep1_scores.std():.4f}")
+    # Soft-label rp: identical projection chain but yc built from the probe PROBABILITIES
+    # (07/24 offline screen: rank corr .64 vs hard, error separation .127 vs .108).
+    softrp_scores = None
+    if any(r.startswith("softrp_") for r in runs):
+        print("[softrp] rp on soft weak probabilities...")
+        softrp_scores = representation_projection_scores(
+            np.asarray(rep_weak_acts["strong_train"], dtype=np.float64),
+            np.asarray(rep_strong_acts["strong_train"], dtype=np.float64),
+            np.asarray(weak_probs_strong, dtype=np.float64),
+            reg=args.rp_reg, n_components=(args.rp_components or None),
+        )
+        print(f"[softrp] scores: mean {softrp_scores.mean():.4f} std {softrp_scores.std():.4f}")
+    # Precomputed custom scores (offline-designed selectors, e.g. the joint screen's ticket
+    # holders). The npz must carry weak_preds for the alignment guard.
+    custom_scores = {}
+    if getattr(args, "custom_scores_npz", "") and any(r.startswith("cs") for r in runs):
+        _cs = np.load(args.custom_scores_npz)
+        _stored = np.asarray(_cs["weak_preds"]).astype(int)
+        _own = np.asarray(weak_preds_strong).astype(int)
+        _rate = float((_stored == _own).mean()) if len(_stored) == len(_own) else 0.0
+        if _rate < 0.95:
+            raise ValueError(f"custom-scores npz misaligned with strong_train (weak_preds match {_rate:.3f})")
+        if _rate < 0.995:
+            print(f"[custom] WARNING: weak_preds match {_rate:.3f} -- cross-machine probe drift tolerated")
+        for _slot in ("cs1", "cs2", "cs3", "cs4"):
+            if _slot in _cs.files:
+                custom_scores[_slot] = np.asarray(_cs[_slot], dtype=np.float64)
+        print(f"[custom] loaded {sorted(custom_scores)} from {args.custom_scores_npz}")
+    # LDA-projected linear residual: label-aware twin of l2resid (07/22 meeting).
+    lda_scores = None
+    if any(r.startswith("lda_") for r in runs):
+        print("[lda] fitting LDA-projected ridge-map residuals (5 folds)...")
+        lda_scores = lda_alignment_scores(
+            np.asarray(rep_weak_acts["strong_train"], dtype=np.float64),
+            np.asarray(rep_strong_acts["strong_train"], dtype=np.float64),
+            weak_preds_strong,
+            n_folds=5, seed=args.seed,
+        )
+        print(f"[lda] scores: mean {lda_scores.mean():.4f} std {lda_scores.std():.4f}")
     if not rep_is_default:
         del rep_weak_acts, rep_strong_acts
         clear_memory()
@@ -2130,10 +2798,23 @@ def main() -> None:
     # training -> computed once per data seed.
     el_scores = None
     weak_entropy_scores = None
-    if any(r.strip().startswith(("el_", "conf_entropy_")) for r in args.runs.split(",")):
-        el_scores, weak_entropy_scores = compute_el_kway_scores(
+    if args.dump_el or any(r.strip().startswith(("el_", "conf_entropy_")) for r in args.runs.split(",")):
+        el_scores, weak_entropy_scores, el_extras = compute_el_kway_scores(
             args, splits.strong_train, args.device
         )
+    if getattr(args, "dump_el", "") and el_scores is not None:
+        np.savez_compressed(
+            args.dump_el,
+            el=np.asarray(el_scores, dtype=np.float64),
+            weak_entropy=np.asarray(weak_entropy_scores, dtype=np.float64),
+            elloss=el_extras["elloss"],
+            weak_pick=el_extras["weak_pick"],
+            gold_opt=el_extras["gold_opt"],
+            weak_preds=np.asarray(weak_preds_strong, dtype=np.int64),
+            weak_probs=np.asarray(weak_probs_strong, dtype=np.float32),
+            gt=np.asarray(strong_train_labels, dtype=np.int64),
+        )
+        print(f"[dump-el] wrote {args.dump_el}")
 
     best_row = next(row for row in map_rows if row["name"] == best_map.name)
     middle_indices, middle_filter = middle_residual_indices(residuals, args.residual_keep_middle_frac)
@@ -2240,6 +2921,20 @@ def main() -> None:
             multichoice_rows = load_wanli_multichoice_eval(args.n_eval_questions, args.seed + 2)
         elif args.dataset == "control":
             multichoice_rows = load_control_multichoice_eval(args.n_eval_questions, args.seed + 2)
+        elif args.dataset == "fevernli":
+            multichoice_rows = load_fevernli_multichoice_eval(args.n_eval_questions, args.seed + 2)
+        elif args.dataset == "conjnli":
+            multichoice_rows = load_conjnli_multichoice_eval(args.n_eval_questions, args.seed + 2)
+        elif args.dataset == "imppres":
+            multichoice_rows = load_imppres_multichoice_eval(args.n_eval_questions, args.seed + 2)
+        elif args.dataset == "aquarat":
+            multichoice_rows = load_aquarat_multichoice_eval(args.n_eval_questions, args.seed + 2)
+        elif args.dataset == "quail":
+            multichoice_rows = _generic_mc_eval(_quail_rows("validation", args.seed + 2), "quail", args.n_eval_questions, args.seed + 2)
+        elif args.dataset == "riddlesense":
+            multichoice_rows = _generic_mc_eval(_riddlesense_rows("validation", args.seed + 2), "riddlesense", args.n_eval_questions, args.seed + 2)
+        elif args.dataset == "scinli":
+            multichoice_rows = _generic_mc_eval(_scinli_rows("test", args.seed + 2), "scinli", args.n_eval_questions, args.seed + 2)
         else:
             multichoice_rows = []
         if multichoice_rows:
@@ -2402,6 +3097,35 @@ def main() -> None:
             [weak_labels[int(i)] for i in committee_disagree_balanced_indices],
         ),
     }
+    # weak_strong_agree: keep the points where the fine-tuned weak model and the UNTUNED strong
+    # base agree on the yes/no prediction (gold-free "label likely correct" proxy -- if both
+    # independent models say the same thing, the weak label is more trustworthy). Requires one
+    # extra base pass over strong_train, so only computed when an agree/disagree arm is requested.
+    if any(r in runs for r in ("weak_strong_agree_balanced", "weak_strong_disagree_balanced")):
+        from run_dream_w2s_baselines import load_strong_model_and_tokenizer
+        _bm, _bt = load_strong_model_and_tokenizer(args, trainable_lora=False)
+        _, _base_rows = evaluate_yes_no(
+            _bm, _bt, lora_examples["strong_train"],
+            max(int(args.strong_batch_size), 8), device, args.max_length,
+            "score base on strong_train (agree arm)",
+        )
+        base_preds_strong = (np.asarray([float(r["prob_label1"]) for r in _base_rows]) >= 0.5).astype(int)
+        del _bm
+        clear_memory()
+        agree_idx = np.where(base_preds_strong == weak_preds_strong)[0]
+        disagree_idx = np.where(base_preds_strong != weak_preds_strong)[0]
+        agree_bal = hard_weak_label_balance(agree_idx, weak_preds_strong, args.seed + 19000)
+        disagree_bal = hard_weak_label_balance(disagree_idx, weak_preds_strong, args.seed + 19500)
+        run_subsets["weak_strong_agree_balanced"] = (
+            [strong_examples[int(i)] for i in agree_bal],
+            [weak_labels[int(i)] for i in agree_bal],
+        )
+        run_subsets["weak_strong_disagree_balanced"] = (
+            [strong_examples[int(i)] for i in disagree_bal],
+            [weak_labels[int(i)] for i in disagree_bal],
+        )
+        print(f"[weak_strong_agree] base-weak agreement rate: {len(agree_idx) / max(1, len(weak_preds_strong)):.3f} "
+              f"(agree {len(agree_idx)}, balanced {len(agree_bal)}; disagree {len(disagree_idx)}, balanced {len(disagree_bal)})")
     # Optional committee selection sweep over keep fractions (label-complexity /
     # data-efficiency curve): for each f, keep the most-reliable (low-disagreement)
     # or most-boundary (high-disagreement) f-fraction, plus a matched random_balanced.
@@ -2492,11 +3216,170 @@ def main() -> None:
             [strong_examples[int(i)] for i in rp_high_bal],
             [weak_labels[int(i)] for i in rp_high_bal],
         )
+        # curriculum_rphigh: SELECT-then-CURRICULUM -- the exact rp_high_balanced subset, but
+        # trained in a fixed order instead of shuffled (paired comparison: same data, only the
+        # order differs). Two orderings: by weak confidence (most-confident/easiest first) and
+        # by rp score (most-overlap first, expanding outward).
+        _rp_sub = np.asarray(rp_high_bal, dtype=int)
+        run_subsets[f"curriculum_rphigh_f{pct}"] = run_subsets[f"rp_high_balanced_f{pct}"]
+        curriculum_orders[f"curriculum_rphigh_f{pct}"] = list(np.argsort(-weak_confidences_strong[_rp_sub]))
+        run_subsets[f"curriculum_rphigh_byrp_f{pct}"] = run_subsets[f"rp_high_balanced_f{pct}"]
+        curriculum_orders[f"curriculum_rphigh_byrp_f{pct}"] = list(np.argsort(-rp_scores[_rp_sub]))
+        # ascending variant: toxic low-rp points FIRST, cream last (recency for the good points)
+        run_subsets[f"curriculum_rphigh_byrp_asc_f{pct}"] = run_subsets[f"rp_high_balanced_f{pct}"]
+        curriculum_orders[f"curriculum_rphigh_byrp_asc_f{pct}"] = list(np.argsort(rp_scores[_rp_sub]))
         rp_low_idx, _ = score_band_indices(rp_scores, frac, "low")
         rp_low_bal = hard_weak_label_balance(rp_low_idx, weak_preds_strong, args.seed + 16500 + fi)
         run_subsets[f"rp_low_balanced_f{pct}"] = (
             [strong_examples[int(i)] for i in rp_low_bal],
             [weak_labels[int(i)] for i in rp_low_bal],
+        )
+        if cca_scores is not None:
+            cc_high_idx, _ = score_band_indices(cca_scores, frac, "high")
+            cc_high_bal = hard_weak_label_balance(cc_high_idx, weak_preds_strong, args.seed + 22000 + fi)
+            run_subsets[f"cca_high_balanced_f{pct}"] = (
+                [strong_examples[int(i)] for i in cc_high_bal],
+                [weak_labels[int(i)] for i in cc_high_bal],
+            )
+            cc_low_idx, _ = score_band_indices(cca_scores, frac, "low")
+            cc_low_bal = hard_weak_label_balance(cc_low_idx, weak_preds_strong, args.seed + 22500 + fi)
+            run_subsets[f"cca_low_balanced_f{pct}"] = (
+                [strong_examples[int(i)] for i in cc_low_bal],
+                [weak_labels[int(i)] for i in cc_low_bal],
+            )
+        # linear/affine alignment residual (the existing ridge weak->strong map residuals):
+        # the linear counterpart of mlpalign -- what the LRT/stitching-style affine map misses.
+        _lin_resid = np.asarray(residuals, dtype=np.float64).reshape(-1)
+        lr_high_idx, _ = score_band_indices(_lin_resid, frac, "high")
+        lr_high_bal = hard_weak_label_balance(lr_high_idx, weak_preds_strong, args.seed + 23000 + fi)
+        run_subsets[f"l2resid_high_balanced_f{pct}"] = (
+            [strong_examples[int(i)] for i in lr_high_bal],
+            [weak_labels[int(i)] for i in lr_high_bal],
+        )
+        lr_low_idx, _ = score_band_indices(_lin_resid, frac, "low")
+        lr_low_bal = hard_weak_label_balance(lr_low_idx, weak_preds_strong, args.seed + 23500 + fi)
+        run_subsets[f"l2resid_low_balanced_f{pct}"] = (
+            [strong_examples[int(i)] for i in lr_low_bal],
+            [weak_labels[int(i)] for i in lr_low_bal],
+        )
+        for _rname, _rscores, _roff in (("ccarobust", cca_robust_scores, 26000), ("l2robust", l2robust_scores, 27000)):
+            if _rscores is None:
+                continue
+            _hi_idx, _ = score_band_indices(_rscores, frac, "high")
+            _hi_bal = hard_weak_label_balance(_hi_idx, weak_preds_strong, args.seed + _roff + fi)
+            run_subsets[f"{_rname}_high_balanced_f{pct}"] = (
+                [strong_examples[int(i)] for i in _hi_bal],
+                [weak_labels[int(i)] for i in _hi_bal],
+            )
+            _lo_idx, _ = score_band_indices(_rscores, frac, "low")
+            _lo_bal = hard_weak_label_balance(_lo_idx, weak_preds_strong, args.seed + _roff + 500 + fi)
+            run_subsets[f"{_rname}_low_balanced_f{pct}"] = (
+                [strong_examples[int(i)] for i in _lo_bal],
+                [weak_labels[int(i)] for i in _lo_bal],
+            )
+        if mlprp_scores is not None:
+            mr_high_idx, _ = score_band_indices(mlprp_scores, frac, "high")
+            mr_high_bal = hard_weak_label_balance(mr_high_idx, weak_preds_strong, args.seed + 25000 + fi)
+            run_subsets[f"mlprp_high_balanced_f{pct}"] = (
+                [strong_examples[int(i)] for i in mr_high_bal],
+                [weak_labels[int(i)] for i in mr_high_bal],
+            )
+            mr_low_idx, _ = score_band_indices(mlprp_scores, frac, "low")
+            mr_low_bal = hard_weak_label_balance(mr_low_idx, weak_preds_strong, args.seed + 25500 + fi)
+            run_subsets[f"mlprp_low_balanced_f{pct}"] = (
+                [strong_examples[int(i)] for i in mr_low_bal],
+                [weak_labels[int(i)] for i in mr_low_bal],
+            )
+        if lda_scores is not None:
+            ld_high_idx, _ = score_band_indices(lda_scores, frac, "high")
+            ld_high_bal = hard_weak_label_balance(ld_high_idx, weak_preds_strong, args.seed + 28000 + fi)
+            run_subsets[f"lda_high_balanced_f{pct}"] = (
+                [strong_examples[int(i)] for i in ld_high_bal],
+                [weak_labels[int(i)] for i in ld_high_bal],
+            )
+            ld_low_idx, _ = score_band_indices(lda_scores, frac, "low")
+            ld_low_bal = hard_weak_label_balance(ld_low_idx, weak_preds_strong, args.seed + 28500 + fi)
+            run_subsets[f"lda_low_balanced_f{pct}"] = (
+                [strong_examples[int(i)] for i in ld_low_bal],
+                [weak_labels[int(i)] for i in ld_low_bal],
+            )
+        if softrp_scores is not None:
+            sr_high_idx, _ = score_band_indices(softrp_scores, frac, "high")
+            sr_high_bal = hard_weak_label_balance(sr_high_idx, weak_preds_strong, args.seed + 30000 + fi)
+            run_subsets[f"softrp_high_balanced_f{pct}"] = (
+                [strong_examples[int(i)] for i in sr_high_bal],
+                [weak_labels[int(i)] for i in sr_high_bal],
+            )
+            sr_low_idx, _ = score_band_indices(softrp_scores, frac, "low")
+            sr_low_bal = hard_weak_label_balance(sr_low_idx, weak_preds_strong, args.seed + 30500 + fi)
+            run_subsets[f"softrp_low_balanced_f{pct}"] = (
+                [strong_examples[int(i)] for i in sr_low_bal],
+                [weak_labels[int(i)] for i in sr_low_bal],
+            )
+        for _ci, (_slot, _sc) in enumerate(sorted(custom_scores.items())):
+            _hi, _ = score_band_indices(_sc, frac, "high")
+            _hb = hard_weak_label_balance(_hi, weak_preds_strong, args.seed + 31000 + 1000 * _ci + fi)
+            run_subsets[f"{_slot}_high_balanced_f{pct}"] = (
+                [strong_examples[int(i)] for i in _hb],
+                [weak_labels[int(i)] for i in _hb],
+            )
+            _lo, _ = score_band_indices(_sc, frac, "low")
+            _lb = hard_weak_label_balance(_lo, weak_preds_strong, args.seed + 31500 + 1000 * _ci + fi)
+            run_subsets[f"{_slot}_low_balanced_f{pct}"] = (
+                [strong_examples[int(i)] for i in _lb],
+                [weak_labels[int(i)] for i in _lb],
+            )
+        if linstep1_scores is not None:
+            ls_high_idx, _ = score_band_indices(linstep1_scores, frac, "high")
+            ls_high_bal = hard_weak_label_balance(ls_high_idx, weak_preds_strong, args.seed + 29000 + fi)
+            run_subsets[f"linstep1_high_balanced_f{pct}"] = (
+                [strong_examples[int(i)] for i in ls_high_bal],
+                [weak_labels[int(i)] for i in ls_high_bal],
+            )
+            ls_low_idx, _ = score_band_indices(linstep1_scores, frac, "low")
+            ls_low_bal = hard_weak_label_balance(ls_low_idx, weak_preds_strong, args.seed + 29500 + fi)
+            run_subsets[f"linstep1_low_balanced_f{pct}"] = (
+                [strong_examples[int(i)] for i in ls_low_bal],
+                [weak_labels[int(i)] for i in ls_low_bal],
+            )
+        if mlpstep1_scores is not None:
+            ms_high_idx, _ = score_band_indices(mlpstep1_scores, frac, "high")
+            ms_high_bal = hard_weak_label_balance(ms_high_idx, weak_preds_strong, args.seed + 27000 + fi)
+            run_subsets[f"mlpstep1_high_balanced_f{pct}"] = (
+                [strong_examples[int(i)] for i in ms_high_bal],
+                [weak_labels[int(i)] for i in ms_high_bal],
+            )
+            ms_low_idx, _ = score_band_indices(mlpstep1_scores, frac, "low")
+            ms_low_bal = hard_weak_label_balance(ms_low_idx, weak_preds_strong, args.seed + 27500 + fi)
+            run_subsets[f"mlpstep1_low_balanced_f{pct}"] = (
+                [strong_examples[int(i)] for i in ms_low_bal],
+                [weak_labels[int(i)] for i in ms_low_bal],
+            )
+        if mlpalign_scores is not None:
+            ma_high_idx, _ = score_band_indices(mlpalign_scores, frac, "high")
+            ma_high_bal = hard_weak_label_balance(ma_high_idx, weak_preds_strong, args.seed + 21000 + fi)
+            run_subsets[f"mlpalign_high_balanced_f{pct}"] = (
+                [strong_examples[int(i)] for i in ma_high_bal],
+                [weak_labels[int(i)] for i in ma_high_bal],
+            )
+            ma_low_idx, _ = score_band_indices(mlpalign_scores, frac, "low")
+            ma_low_bal = hard_weak_label_balance(ma_low_idx, weak_preds_strong, args.seed + 21500 + fi)
+            run_subsets[f"mlpalign_low_balanced_f{pct}"] = (
+                [strong_examples[int(i)] for i in ma_low_bal],
+                [weak_labels[int(i)] for i in ma_low_bal],
+            )
+        # rp_conf: combine the two ORTHOGONAL axes -- rp (learnable) + weak confidence (clean label).
+        # Rank-sum so both contribute equally, then keep the top-frac (SAME kept-set size as rp_high,
+        # so the comparison vs rp_high_f{pct} is size-controlled). Tests whether stacking the
+        # cleanliness axis on rp closes the gap to the weak_correct_only oracle.
+        _rp_rank = np.argsort(np.argsort(rp_scores)).astype(np.float64)
+        _conf_rank = np.argsort(np.argsort(weak_confidences_strong)).astype(np.float64)
+        rp_conf_score = _rp_rank + _conf_rank
+        rp_conf_high_idx, _ = score_band_indices(rp_conf_score, frac, "high")
+        rp_conf_high_bal = hard_weak_label_balance(rp_conf_high_idx, weak_preds_strong, args.seed + 24000 + fi)
+        run_subsets[f"rp_conf_high_balanced_f{pct}"] = (
+            [strong_examples[int(i)] for i in rp_conf_high_bal],
+            [weak_labels[int(i)] for i in rp_conf_high_bal],
         )
         # excess-loss / learnability (K-way option entropy): H_weak(options) - H_strong(options)
         if el_scores is not None:
@@ -2557,6 +3440,14 @@ def main() -> None:
                 run_subsets[f"{sig_name}_q{i}_balanced"] = (
                     [strong_examples[int(j)] for j in q_bal],
                     [weak_labels[int(j)] for j in q_bal],
+                )
+                # GT-rescue variant: the SAME bin subset trained with gold labels instead of
+                # weak labels. Separates the two toxicity mechanisms for a bad bin: if GT
+                # cannot rescue it either, the points are unlearnable (representation-side);
+                # if GT rescues it, the damage was systematic weak-label error.
+                run_subsets[f"{sig_name}_q{i}_gt_balanced"] = (
+                    [strong_examples[int(j)] for j in q_bal],
+                    [int(strong_train_labels[int(j)]) for j in q_bal],
                 )
 
     random_run_names: list[str] = []

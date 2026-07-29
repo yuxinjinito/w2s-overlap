@@ -233,6 +233,400 @@ def vitaminc_questions(n: int, seed: int):
     return out
 
 
+def codah_questions(n: int, seed: int):
+    """CODAH: adversarially-filtered commonsense sentence completion (4 options).
+    Only a train split exists on HF; fine for a base screen."""
+    raw = load_dataset("codah", "codah", split="train").shuffle(seed=seed)
+    out = []
+    for ex in raw:
+        options = [str(o).strip() for o in ex["candidate_answers"]]
+        gold = int(ex["correct_answer_idx"])
+        if not 0 <= gold < len(options):
+            continue
+        ctx = f"Q: Complete this naturally: {str(ex['question_propmt']).strip()} A:"
+        out.append((ctx, options, gold))
+        if len(out) >= n:
+            break
+    return out
+
+
+def cosmosqa_questions(n: int, seed: int):
+    """Cosmos QA: commonsense reading comprehension (4 options). Test split is
+    unlabeled, so screen on validation."""
+    raw = load_dataset("cosmos_qa", "default", split="validation",
+                       revision="refs/convert/parquet").shuffle(seed=seed)
+    out = []
+    for ex in raw:
+        options = [str(ex[f"answer{i}"]).strip() for i in range(4)]
+        gold = int(ex["label"])
+        if not 0 <= gold < 4:
+            continue
+        ctx = f"{str(ex['context']).strip()}\nQ: {str(ex['question']).strip()} A:"
+        out.append((ctx, options, gold))
+        if len(out) >= n:
+            break
+    return out
+
+
+def musr_questions(n: int, seed: int):
+    """MuSR: multistep soft reasoning over long narratives (murder mysteries split;
+    'choices' is a stringified python list)."""
+    import ast as _ast
+
+    raw = load_dataset("TAUR-Lab/MuSR", split="murder_mysteries").shuffle(seed=seed)
+    out = []
+    for ex in raw:
+        try:
+            options = [str(o).strip() for o in _ast.literal_eval(ex["choices"])]
+        except (ValueError, SyntaxError):
+            continue
+        gold = int(ex["answer_index"])
+        if not 0 <= gold < len(options):
+            continue
+        ctx = f"{str(ex['narrative']).strip()}\nQ: {str(ex['question']).strip()} A:"
+        out.append((ctx, options, gold))
+        if len(out) >= n:
+            break
+    return out
+
+
+def quail_questions(n: int, seed: int):
+    """QuAIL: multi-domain reading comprehension (4 options, incl. unanswerable)."""
+    raw = load_dataset("textmachinelab/quail", "default", split="validation",
+                       revision="refs/convert/parquet").shuffle(seed=seed)
+    out = []
+    for ex in raw:
+        options = [str(o).strip() for o in ex["answers"]]
+        gold = int(ex["correct_answer_id"])
+        if not 0 <= gold < len(options):
+            continue
+        ctx = f"{str(ex['context']).strip()}\nQ: {str(ex['question']).strip()} A:"
+        out.append((ctx, options, gold))
+        if len(out) >= n:
+            break
+    return out
+
+
+def _letter_choices_questions(hf: str, config, split: str, n: int, seed: int,
+                              q_prefix: str = ""):
+    """Generic loader for the AllenAI letter-keyed MC schema: question + choices{label,text}
+    + answerKey. Used by CommonsenseQA (5-way) and QASC (8-way)."""
+    raw = (load_dataset(hf, config, split=split) if config else load_dataset(hf, split=split))
+    raw = raw.shuffle(seed=seed)
+    out = []
+    for ex in raw:
+        labels = list(ex["choices"]["label"])
+        options = [str(t).strip() for t in ex["choices"]["text"]]
+        key = str(ex["answerKey"]).strip()
+        if key not in labels or not options:
+            continue
+        gold = labels.index(key)
+        ctx = f"{q_prefix}Q: {str(ex['question']).strip()} A:"
+        out.append((ctx, options, gold))
+        if len(out) >= n:
+            break
+    return out
+
+
+def csqa_questions(n: int, seed: int):
+    """CommonsenseQA: 5-way commonsense MC with adversarial ConceptNet distractors.
+    Test split is unlabeled -> screen on validation."""
+    return _letter_choices_questions("tau/commonsense_qa", None, "validation", n, seed)
+
+
+def qasc_questions(n: int, seed: int):
+    """QASC: 8-way science MC requiring two-fact composition. Test split is
+    unlabeled -> screen on validation."""
+    return _letter_choices_questions("allenai/qasc", None, "validation", n, seed)
+
+
+def lingnli_questions(n: int, seed: int):
+    """LingNLI: linguist-written adversarial NLI (3-way), validation split."""
+    return _nli_relation_questions("tasksource/lingnli", "validation", "premise", "hypothesis",
+                                   "label", _NLI3, n, seed)
+
+
+def fevernli_questions(n: int, seed: int):
+    """FEVER-NLI: fact-verification recast as 3-way (SUPPORTS/NEI/REFUTES), evidence + claim.
+    dev split (test is unlabeled)."""
+    raw = load_dataset("pietrolesci/nli_fever", split="dev").shuffle(seed=seed)
+    rel = {"SUPPORTS": 0, "NOT ENOUGH INFO": 1, "REFUTES": 2}
+    opts = ["supported", "not enough info", "refuted"]
+    out = []
+    for ex in raw:
+        gold = rel.get(str(ex["fever_gold_label"]))
+        ev = str(ex["premise"]).strip()
+        cl = str(ex["hypothesis"]).strip()
+        if gold is None or not ev or not cl:
+            continue
+        ctx = f"Evidence: {ev}\nClaim: {cl}\nQ: Based on the evidence, the claim is? A:"
+        out.append((ctx, list(opts), gold))
+        if len(out) >= n:
+            break
+    return out
+
+
+def imppres_questions(n: int, seed: int):
+    """ImpPres (presupposition section): structurally adversarial 3-way NLI probing
+    presupposition projection; merges several presupposition configs."""
+    configs = ["presupposition_all_n_presupposition", "presupposition_both_presupposition",
+               "presupposition_change_of_state", "presupposition_cleft_existence"]
+    out = []
+    per = max(1, n // len(configs) + 1)
+    for cfg in configs:
+        dd = load_dataset("facebook/imppres", cfg)
+        raw = dd[list(dd.keys())[0]].shuffle(seed=seed)
+        got = 0
+        for ex in raw:
+            lab = str(ex.get("gold_label", "")).strip().lower()
+            try:
+                gold = int(lab)  # numeric string convention: 0=ent 1=neu 2=con
+            except ValueError:
+                gold = _NLI3.get(lab)
+            if gold not in (0, 1, 2):
+                continue
+            ctx = (
+                f"Premise: {str(ex['premise']).strip()}\n"
+                f"Hypothesis: {str(ex['hypothesis']).strip()}\n"
+                "Q: What is the relationship from the premise to the hypothesis? A:"
+            )
+            out.append((ctx, list(ANLI_RELATIONS), gold))
+            got += 1
+            if got >= per or len(out) >= n:
+                break
+        if len(out) >= n:
+            break
+    return out[:n]
+
+
+def conjnli_questions(n: int, seed: int):
+    """ConjNLI: adversarial NLI over conjunctions (and/or/but/nor), 3-way. Loaded from the
+    authors' GitHub TSV (no HF mirror exists)."""
+    import random as _random
+
+    url = "https://raw.githubusercontent.com/swarnaHub/ConjNLI/master/data/NLI/conj_dev.tsv"
+    ds = load_dataset("csv", data_files={"dev": url}, delimiter="\t")["dev"]
+    rows = list(ds)
+    _random.Random(seed).shuffle(rows)
+    out = []
+    for ex in rows:
+        keys = list(ex.keys())
+        prem = str(ex.get("premise", ex.get(keys[0], ""))).strip()
+        hyp = str(ex.get("hypothesis", ex.get(keys[1], ""))).strip()
+        gold = _NLI3.get(str(ex.get("label", ex.get(keys[2], ""))).strip().lower())
+        if gold is None or not prem or not hyp:
+            continue
+        ctx = (
+            f"Premise: {prem}\nHypothesis: {hyp}\n"
+            "Q: What is the relationship from the premise to the hypothesis? A:"
+        )
+        out.append((ctx, list(ANLI_RELATIONS), gold))
+        if len(out) >= n:
+            break
+    return out
+
+
+def robustnli_questions(n: int, seed: int):
+    """Robust-NLI stress-test collection (PI_CD split: counterfactual/distraction stress),
+    3-way, adversarially constructed from MNLI."""
+    raw = load_dataset("pietrolesci/robust_nli", split="PI_CD").shuffle(seed=seed)
+    out = []
+    for ex in raw:
+        cols = {k.lower(): k for k in ex.keys()}
+        prem = str(ex.get(cols.get("premise", "premise"), "")).strip()
+        hyp = str(ex.get(cols.get("hypothesis", "hypothesis"), "")).strip()
+        lab = str(ex.get(cols.get("label", "label"), "")).strip().lower()
+        try:
+            gold = int(lab)  # MNLI convention: 0=entailment 1=neutral 2=contradiction
+        except ValueError:
+            gold = _NLI3.get(lab)
+        if gold not in (0, 1, 2) or not prem or not hyp:
+            continue
+        ctx = (
+            f"Premise: {prem}\nHypothesis: {hyp}\n"
+            "Q: What is the relationship from the premise to the hypothesis? A:"
+        )
+        out.append((ctx, list(ANLI_RELATIONS), gold))
+        if len(out) >= n:
+            break
+    return out
+
+
+def dynasent_questions(n: int, seed: int):
+    """DynaSent R2: Dynabench human-adversarial sentiment (3-way) -- the ANLI-style
+    model-in-the-loop collection, non-NLI."""
+    raw = load_dataset("parquet", data_files={
+        "train": "hf://datasets/dynabench/dynasent@refs/convert/parquet/dynabench.dynasent.r2.all/train/*.parquet"
+    }, split="train").shuffle(seed=seed)
+    opts = ["positive", "negative", "neutral"]
+    lab2idx = {"positive": 0, "negative": 1, "neutral": 2}
+    out = []
+    for ex in raw:
+        gold = lab2idx.get(str(ex.get("gold_label", "")).strip().lower())
+        sent = str(ex.get("sentence", "")).strip()
+        if gold is None or not sent:
+            continue
+        ctx = f"Sentence: {sent}\nQ: What is the sentiment of the sentence? A:"
+        out.append((ctx, list(opts), gold))
+        if len(out) >= n:
+            break
+    return out
+
+
+def quality_questions(n: int, seed: int):
+    """QuALITY: human-written long-document MC (4 options), hard-annotated exam-style."""
+    raw = load_dataset("emozilla/quality", split="validation").shuffle(seed=seed)
+    out = []
+    for ex in raw:
+        options = [str(o).strip() for o in ex.get("options", [])]
+        try:
+            gold = int(ex.get("answer", -1)) - 1  # 1-indexed
+        except (TypeError, ValueError):
+            continue
+        art = str(ex.get("article", "")).strip()
+        q = str(ex.get("question", "")).strip()
+        if not (0 <= gold < len(options)) or not art or not q:
+            continue
+        ctx = f"{art[:4000]}\nQ: {q} A:"
+        out.append((ctx, options, gold))
+        if len(out) >= n:
+            break
+    return out
+
+
+def race_questions(n: int, seed: int):
+    """RACE (high): exam reading comprehension MC (4 options), human-written."""
+    raw = load_dataset("ehovy/race", "high", split="validation").shuffle(seed=seed)
+    out = []
+    for ex in raw:
+        options = [str(o).strip() for o in ex.get("options", [])]
+        gold = "ABCD".find(str(ex.get("answer", "")).strip())
+        art = str(ex.get("article", "")).strip()
+        q = str(ex.get("question", "")).strip()
+        if not (0 <= gold < len(options)) or not art or not q:
+            continue
+        ctx = f"{art[:4000]}\nQ: {q} A:"
+        out.append((ctx, options, gold))
+        if len(out) >= n:
+            break
+    return out
+
+
+def siqa_questions(n: int, seed: int):
+    """Social IQa: social commonsense MC (3 options), adversarially filtered."""
+    raw = load_dataset("allenai/social_i_qa", "default", split="validation",
+                       revision="refs/convert/parquet").shuffle(seed=seed)
+    out = []
+    for ex in raw:
+        options = [str(ex.get(k, "")).strip() for k in ("answerA", "answerB", "answerC")]
+        try:
+            gold = int(ex.get("label", 0)) - 1  # 1-indexed
+        except (TypeError, ValueError):
+            continue
+        c = str(ex.get("context", "")).strip()
+        q = str(ex.get("question", "")).strip()
+        if not (0 <= gold < 3) or not c or not q:
+            continue
+        ctx = f"{c}\nQ: {q} A:"
+        out.append((ctx, options, gold))
+        if len(out) >= n:
+            break
+    return out
+
+
+def mmlupro_questions(n: int, seed: int):
+    """MMLU-Pro: 10-option MC with model-generated adversarial distractors (knowledge-heavy,
+    but the only large >=10-way pool; high-way screen per the way-count relaxation)."""
+    raw = load_dataset("TIGER-Lab/MMLU-Pro", split="test").shuffle(seed=seed)
+    out = []
+    for ex in raw:
+        options = [str(o).strip() for o in ex.get("options", [])]
+        gold = ex.get("answer_index", -1)
+        q = str(ex.get("question", "")).strip()
+        if not isinstance(gold, int) or not (0 <= gold < len(options)) or not q or len(options) < 6:
+            continue
+        ctx = f"Q: {q} A:"
+        out.append((ctx, options, gold))
+        if len(out) >= n:
+            break
+    return out
+
+
+def aquarat_questions(n: int, seed: int):
+    """AQuA-RAT: 5-option math word problems (large pool; weak-noise risk expected)."""
+    raw = load_dataset("deepmind/aqua_rat", "raw", split="train").shuffle(seed=seed)
+    out = []
+    for ex in raw:
+        opts_raw = [str(o).strip() for o in ex.get("options", [])]
+        options = [o.split(")", 1)[1].strip() if ")" in o else o for o in opts_raw]
+        gold = "ABCDE".find(str(ex.get("correct", "")).strip())
+        q = str(ex.get("question", "")).strip()
+        if not (0 <= gold < len(options)) or not q:
+            continue
+        ctx = f"Q: {q} A:"
+        out.append((ctx, options, gold))
+        if len(out) >= n:
+            break
+    return out
+
+
+def riddlesense_questions(n: int, seed: int):
+    """RiddleSense: 5-option human-written riddles (adversarial commonsense)."""
+    raw = load_dataset("INK-USC/riddle_sense", "default", split="validation",
+                       revision="refs/convert/parquet").shuffle(seed=seed)
+    out = []
+    for ex in raw:
+        labels = list(ex["choices"]["label"])
+        options = [str(t).strip() for t in ex["choices"]["text"]]
+        key = str(ex["answerKey"]).strip()
+        if key not in labels or not options:
+            continue
+        out.append((f"Q: {str(ex['question']).strip()} A:", options, labels.index(key)))
+        if len(out) >= n:
+            break
+    return out
+
+
+def contractnli_questions(n: int, seed: int):
+    """ContractNLI: legal-contract NLI (3-way: entailed/contradicted/not mentioned), long docs."""
+    raw = load_dataset("presencesw/contract-nli", split="train").shuffle(seed=seed)
+    lab2idx = {"entailment": 0, "notmentioned": 1, "contradiction": 2}
+    opts = ["entailment", "not mentioned", "contradiction"]
+    out = []
+    for ex in raw:
+        gold = lab2idx.get(str(ex.get("gold_label", "")).strip().lower())
+        prem = str(ex.get("sentence1", "")).strip()
+        hyp = str(ex.get("sentence2", "")).strip()
+        if gold is None or not prem or not hyp:
+            continue
+        ctx = (f"Contract: {prem}\nStatement: {hyp}\n"
+               "Q: Based on the contract, the statement is? A:")
+        out.append((ctx, list(opts), gold))
+        if len(out) >= n:
+            break
+    return out
+
+
+def scinli_questions(n: int, seed: int):
+    """SciNLI: scientific-paper NLI (4-way: entailment/contrasting/reasoning/neutral)."""
+    raw = load_dataset("tasksource/scinli", split="train").shuffle(seed=seed)
+    opts = ["entailment", "contrasting", "reasoning", "neutral"]
+    lab2idx = {o: i for i, o in enumerate(opts)}
+    out = []
+    for ex in raw:
+        gold = lab2idx.get(str(ex.get("label", "")).strip().lower())
+        prem = str(ex.get("sentence1", "")).strip()
+        hyp = str(ex.get("sentence2", "")).strip()
+        if gold is None or not prem or not hyp:
+            continue
+        ctx = (f"Sentence 1: {prem}\nSentence 2: {hyp}\n"
+               "Q: What is the relationship from sentence 1 to sentence 2? A:")
+        out.append((ctx, list(opts), gold))
+        if len(out) >= n:
+            break
+    return out
+
+
 CANDIDATE_LOADERS = {
     "wanli": wanli_questions,
     "reclor": reclor_questions,
@@ -241,6 +635,26 @@ CANDIDATE_LOADERS = {
     "control": control_questions,
     "snli_hard": snli_hard_questions,
     "vitaminc": vitaminc_questions,
+    "codah": codah_questions,
+    "cosmosqa": cosmosqa_questions,
+    "musr": musr_questions,
+    "quail": quail_questions,
+    "csqa": csqa_questions,
+    "qasc": qasc_questions,
+    "lingnli": lingnli_questions,
+    "fevernli": fevernli_questions,
+    "imppres": imppres_questions,
+    "conjnli": conjnli_questions,
+    "robustnli": robustnli_questions,
+    "dynasent": dynasent_questions,
+    "contractnli": contractnli_questions,
+    "scinli": scinli_questions,
+    "mmlupro": mmlupro_questions,
+    "aquarat": aquarat_questions,
+    "riddlesense": riddlesense_questions,
+    "quality": quality_questions,
+    "race": race_questions,
+    "siqa": siqa_questions,
 }
 
 
@@ -248,7 +662,8 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset", default="hellaswag",
                     choices=["hellaswag", "dream", "anli", "sciq", "wanli", "reclor", "art", "logiqa2",
-                             "control", "snli_hard", "vitaminc"])
+                             "control", "snli_hard", "vitaminc", "codah", "cosmosqa", "musr", "quail",
+                             "csqa", "qasc", "lingnli", "fevernli", "imppres", "conjnli", "robustnli", "dynasent", "quality", "race", "siqa", "mmlupro", "aquarat", "riddlesense", "contractnli", "scinli"])
     ap.add_argument("--anli-round", default="r2", choices=["r1", "r2", "r3"])
     ap.add_argument("--model", default="meta-llama/Llama-3.1-8B")
     ap.add_argument("--n-questions", type=int, default=500)

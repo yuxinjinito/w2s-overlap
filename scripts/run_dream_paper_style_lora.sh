@@ -113,7 +113,7 @@ LR_DECAY="${LR_DECAY:-linear}"
 # Activation layer + token pooling for the kNN / RP selectors (controls; probe stays end/last).
 REPRESENTATION_LAYER="${REPRESENTATION_LAYER:-end}"
 REPRESENTATION_POOLING="${REPRESENTATION_POOLING:-last}"
-# Span the kNN/RP representation pools over: 'full' (whole prompt) or 'answer' (answer-only).
+# Span the kNN/RP representation pools over: 'full' (whole prompt, default) or 'answer' (answer-only).
 REPRESENTATION_SPAN="${REPRESENTATION_SPAN:-full}"
 # >1 adds disjoint equal-size quantile-bin selectors {rp,el,confidence}_q{i}_balanced (dose-response).
 QUANTILE_BINS="${QUANTILE_BINS:-0}"
@@ -168,6 +168,24 @@ if [[ "${EVAL_3CLASS:-0}" == "1" ]]; then
 fi
 if [[ "${SCORE_BASE_ON_TRAIN:-0}" == "1" ]]; then
   EXTRA_ARGS+=(--score-base-on-train)
+fi
+if [[ -n "${DUMP_ACTS:-}" ]]; then
+  EXTRA_ARGS+=(--dump-acts "$DUMP_ACTS")
+fi
+if [[ -n "${DUMP_EL:-}" ]]; then
+  EXTRA_ARGS+=(--dump-el "$DUMP_EL")
+fi
+if [[ -n "${MLPALIGN_EPOCHS:-}" ]]; then
+  EXTRA_ARGS+=(--mlpalign-epochs "$MLPALIGN_EPOCHS")
+fi
+if [[ -n "${MLPALIGN_BOTTLENECK:-}" ]]; then
+  EXTRA_ARGS+=(--mlpalign-bottleneck "$MLPALIGN_BOTTLENECK")
+fi
+if [[ "${MLPALIGN_INSAMPLE:-0}" == "1" ]]; then
+  EXTRA_ARGS+=(--mlpalign-insample)
+fi
+if [[ -n "${CUSTOM_SCORES_NPZ:-}" ]]; then
+  EXTRA_ARGS+=(--custom-scores-npz "$CUSTOM_SCORES_NPZ")
 fi
 if [[ "$SAVE_ACTIVATIONS" == "1" ]]; then
   EXTRA_ARGS+=(--save-activations)
