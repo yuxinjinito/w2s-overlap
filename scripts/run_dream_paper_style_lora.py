@@ -1896,6 +1896,211 @@ def build_run_plan(
         },
     }
 
+
+
+def write_run_outputs(
+    *,
+    args,
+    output_dir,
+    plan,
+    run_reports,
+    prediction_columns,
+    best_map,
+    best_row,
+    committee_disagreement_strong,
+    device,
+    eval_examples,
+    knn_stats,
+    lora_examples,
+    residuals,
+    rp_scores,
+    splits,
+    start,
+    strong_examples,
+    strong_train_labels,
+    test_labels,
+    weak_acts,
+    weak_correct_weak_train,
+    weak_eval3_acc,
+    weak_eval_rows,
+    weak_preds_strong,
+    weak_preds_test,
+    weak_probs_strong,
+) -> None:
+    """Write everything a finished run leaves behind.
+
+    The prediction CSVs, the kept-set summaries and diagnostics, summary.json,
+    the text report, and the optional activation save. Consumes the plan dict
+    from build_run_plan and the per-run reports from the train loop; nothing
+    flows back out.
+    """
+    run_subsets = plan["run_subsets"]
+    random_run_names = plan["random_run_names"]
+    random_unbalanced_run_names = plan["random_unbalanced_run_names"]
+    middle_filter = plan["bands"]["middle_filter"]
+    confidence_middle_filter = plan["bands"]["confidence_middle_filter"]
+    confidence_high_filter = plan["bands"]["confidence_high_filter"]
+    knn_middle_filter = plan["bands"]["knn_middle_filter"]
+    knn_mixed_filter = plan["bands"]["knn_mixed_filter"]
+    committee_agree_filter = plan["bands"]["committee_agree_filter"]
+    committee_disagree_filter = plan["bands"]["committee_disagree_filter"]
+    middle_balanced_indices = plan["bands"]["middle_balanced_indices"]
+    confidence_middle_balanced_indices = plan["bands"]["confidence_middle_balanced_indices"]
+    confidence_high_balanced_indices = plan["bands"]["confidence_high_balanced_indices"]
+    knn_middle_balanced_indices = plan["bands"]["knn_middle_balanced_indices"]
+    knn_mixed_balanced_indices = plan["bands"]["knn_mixed_balanced_indices"]
+    committee_agree_balanced_indices = plan["bands"]["committee_agree_balanced_indices"]
+    committee_disagree_balanced_indices = plan["bands"]["committee_disagree_balanced_indices"]
+    write_predictions(output_dir / "eval_predictions.csv", eval_examples, prediction_columns, weak_eval_rows)
+    # Optional: untuned-strong (base) yes/no P(correct) on each strong_train example, so analyze_rp
+    # can test whether rp selects points the strong BASE can already (nearly) learn (overlap).
+    base_train_probs = None
+    if getattr(args, "score_base_on_train", False):
+        from run_dream_w2s_baselines import load_strong_model_and_tokenizer
+        base_model, base_tok = load_strong_model_and_tokenizer(args, trainable_lora=False)
+        _, base_rows = evaluate_yes_no(
+            base_model, base_tok, lora_examples["strong_train"],
+            max(int(args.strong_batch_size), 8), device, args.max_length, "score base on strong_train",
+        )
+        base_train_probs = np.asarray([float(r["prob_label1"]) for r in base_rows], dtype=np.float64)
+        del base_model
+        clear_memory()
+    write_strong_train_labels(output_dir / "strong_train_labels.csv", strong_examples, weak_probs_strong, residuals, knn_stats, rp_scores=rp_scores, base_probs=base_train_probs)
+    write_knn_diagnostics(
+        output_dir / "knn_diagnostics.csv",
+        strong_examples,
+        strong_train_labels,
+        weak_probs_strong,
+        residuals,
+        knn_stats,
+    )
+    write_subset_csv(output_dir / "train_subsets.csv", {name: run_subsets[name] for name in run_subsets if name in run_reports})
+
+    random_accs = [
+        run_reports[name]["eval"]["accuracy"]
+        for name in random_run_names
+        if name in run_reports
+    ]
+    random_unbalanced_accs = [
+        run_reports[name]["eval"]["accuracy"]
+        for name in random_unbalanced_run_names
+        if name in run_reports
+    ]
+    random_unbalanced_summary = None
+    if random_unbalanced_accs:
+        random_unbalanced_summary = {
+            "count": len(random_unbalanced_accs),
+            "accuracy_mean": float(np.mean(random_unbalanced_accs)),
+            "accuracy_std": float(np.std(random_unbalanced_accs)),
+            "accuracy_min": float(np.min(random_unbalanced_accs)),
+            "accuracy_max": float(np.max(random_unbalanced_accs)),
+        }
+    random_summary = None
+    if random_accs:
+        random_summary = {
+            "count": len(random_accs),
+            "accuracy_mean": float(np.mean(random_accs)),
+            "accuracy_std": float(np.std(random_accs)),
+            "accuracy_min": float(np.min(random_accs)),
+            "accuracy_max": float(np.max(random_accs)),
+        }
+
+    subset_summaries = {
+        name: summarize_train_subset(*subset)
+        for name, subset in run_subsets.items()
+    }
+    subset_summaries["middle_residual_diagnostics"] = subset_summary(
+        middle_balanced_indices,
+        strong_train_labels,
+        weak_probs_strong,
+        residuals,
+    )
+    subset_summaries["confidence_middle_diagnostics"] = subset_summary(
+        confidence_middle_balanced_indices,
+        strong_train_labels,
+        weak_probs_strong,
+        residuals,
+    )
+    subset_summaries["confidence_high_diagnostics"] = subset_summary(
+        confidence_high_balanced_indices,
+        strong_train_labels,
+        weak_probs_strong,
+        residuals,
+    )
+    subset_summaries["knn_middle_diagnostics"] = subset_summary(
+        knn_middle_balanced_indices,
+        strong_train_labels,
+        weak_probs_strong,
+        residuals,
+    )
+    subset_summaries["knn_mixed_diagnostics"] = subset_summary(
+        knn_mixed_balanced_indices,
+        strong_train_labels,
+        weak_probs_strong,
+        residuals,
+    )
+    subset_summaries["committee_agree_diagnostics"] = subset_summary(
+        committee_agree_balanced_indices,
+        strong_train_labels,
+        weak_probs_strong,
+        residuals,
+    )
+    subset_summaries["committee_disagree_diagnostics"] = subset_summary(
+        committee_disagree_balanced_indices,
+        strong_train_labels,
+        weak_probs_strong,
+        residuals,
+    )
+
+    fmt = format_summary(args)
+    summary = build_summary(
+        args=args,
+        best_map=best_map,
+        best_row=best_row,
+        committee_agree_filter=committee_agree_filter,
+        committee_disagree_filter=committee_disagree_filter,
+        committee_disagreement_strong=committee_disagreement_strong,
+        confidence_high_filter=confidence_high_filter,
+        confidence_middle_filter=confidence_middle_filter,
+        fmt=fmt,
+        knn_middle_filter=knn_middle_filter,
+        knn_mixed_filter=knn_mixed_filter,
+        knn_stats=knn_stats,
+        middle_filter=middle_filter,
+        output_dir=output_dir,
+        random_summary=random_summary,
+        random_unbalanced_summary=random_unbalanced_summary,
+        run_reports=run_reports,
+        splits=splits,
+        start=start,
+        strong_train_labels=strong_train_labels,
+        subset_summaries=subset_summaries,
+        test_labels=test_labels,
+        weak_correct_weak_train=weak_correct_weak_train,
+        weak_eval3_acc=weak_eval3_acc,
+        weak_preds_strong=weak_preds_strong,
+        weak_preds_test=weak_preds_test,
+        weak_probs_strong=weak_probs_strong,
+    )
+
+    if args.save_activations:
+        torch.save(
+            {
+                "weak_activations": weak_acts,
+                "splits": {
+                    name: getattr(splits, name).to_pandas()
+                    for name in ["weak_train", "strong_train", "val", "test"]
+                },
+            },
+            output_dir / "activations.pt",
+        )
+
+    (output_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    write_text_report(output_dir / "paper_style_lora_report.txt", summary)
+    print(json.dumps(summary, indent=2))
+    print(f"Wrote outputs to {output_dir}")
+
+
 def main() -> None:
     args = parse_args()
     runs = requested_runs(args)
@@ -2117,22 +2322,6 @@ def main() -> None:
     run_subsets = plan["run_subsets"]
     curriculum_orders = plan["curriculum_orders"]
     run_weights = plan["run_weights"]
-    random_run_names = plan["random_run_names"]
-    random_unbalanced_run_names = plan["random_unbalanced_run_names"]
-    middle_filter = plan["bands"]["middle_filter"]
-    confidence_middle_filter = plan["bands"]["confidence_middle_filter"]
-    confidence_high_filter = plan["bands"]["confidence_high_filter"]
-    knn_middle_filter = plan["bands"]["knn_middle_filter"]
-    knn_mixed_filter = plan["bands"]["knn_mixed_filter"]
-    committee_agree_filter = plan["bands"]["committee_agree_filter"]
-    committee_disagree_filter = plan["bands"]["committee_disagree_filter"]
-    middle_balanced_indices = plan["bands"]["middle_balanced_indices"]
-    confidence_middle_balanced_indices = plan["bands"]["confidence_middle_balanced_indices"]
-    confidence_high_balanced_indices = plan["bands"]["confidence_high_balanced_indices"]
-    knn_middle_balanced_indices = plan["bands"]["knn_middle_balanced_indices"]
-    knn_mixed_balanced_indices = plan["bands"]["knn_mixed_balanced_indices"]
-    committee_agree_balanced_indices = plan["bands"]["committee_agree_balanced_indices"]
-    committee_disagree_balanced_indices = plan["bands"]["committee_disagree_balanced_indices"]
 
     prediction_columns: dict[str, list[dict]] = {}
     run_reports: dict[str, dict] = {}
@@ -2190,154 +2379,34 @@ def main() -> None:
         run_reports[run_name] = report
     args.max_train_steps = fixed_steps
 
-    write_predictions(output_dir / "eval_predictions.csv", eval_examples, prediction_columns, weak_eval_rows)
-    # Optional: untuned-strong (base) yes/no P(correct) on each strong_train example, so analyze_rp
-    # can test whether rp selects points the strong BASE can already (nearly) learn (overlap).
-    base_train_probs = None
-    if getattr(args, "score_base_on_train", False):
-        from run_dream_w2s_baselines import load_strong_model_and_tokenizer
-        base_model, base_tok = load_strong_model_and_tokenizer(args, trainable_lora=False)
-        _, base_rows = evaluate_yes_no(
-            base_model, base_tok, lora_examples["strong_train"],
-            max(int(args.strong_batch_size), 8), device, args.max_length, "score base on strong_train",
-        )
-        base_train_probs = np.asarray([float(r["prob_label1"]) for r in base_rows], dtype=np.float64)
-        del base_model
-        clear_memory()
-    write_strong_train_labels(output_dir / "strong_train_labels.csv", strong_examples, weak_probs_strong, residuals, knn_stats, rp_scores=rp_scores, base_probs=base_train_probs)
-    write_knn_diagnostics(
-        output_dir / "knn_diagnostics.csv",
-        strong_examples,
-        strong_train_labels,
-        weak_probs_strong,
-        residuals,
-        knn_stats,
-    )
-    write_subset_csv(output_dir / "train_subsets.csv", {name: run_subsets[name] for name in run_subsets if name in run_reports})
-
-    random_accs = [
-        run_reports[name]["eval"]["accuracy"]
-        for name in random_run_names
-        if name in run_reports
-    ]
-    random_unbalanced_accs = [
-        run_reports[name]["eval"]["accuracy"]
-        for name in random_unbalanced_run_names
-        if name in run_reports
-    ]
-    random_unbalanced_summary = None
-    if random_unbalanced_accs:
-        random_unbalanced_summary = {
-            "count": len(random_unbalanced_accs),
-            "accuracy_mean": float(np.mean(random_unbalanced_accs)),
-            "accuracy_std": float(np.std(random_unbalanced_accs)),
-            "accuracy_min": float(np.min(random_unbalanced_accs)),
-            "accuracy_max": float(np.max(random_unbalanced_accs)),
-        }
-    random_summary = None
-    if random_accs:
-        random_summary = {
-            "count": len(random_accs),
-            "accuracy_mean": float(np.mean(random_accs)),
-            "accuracy_std": float(np.std(random_accs)),
-            "accuracy_min": float(np.min(random_accs)),
-            "accuracy_max": float(np.max(random_accs)),
-        }
-
-    subset_summaries = {
-        name: summarize_train_subset(*subset)
-        for name, subset in run_subsets.items()
-    }
-    subset_summaries["middle_residual_diagnostics"] = subset_summary(
-        middle_balanced_indices,
-        strong_train_labels,
-        weak_probs_strong,
-        residuals,
-    )
-    subset_summaries["confidence_middle_diagnostics"] = subset_summary(
-        confidence_middle_balanced_indices,
-        strong_train_labels,
-        weak_probs_strong,
-        residuals,
-    )
-    subset_summaries["confidence_high_diagnostics"] = subset_summary(
-        confidence_high_balanced_indices,
-        strong_train_labels,
-        weak_probs_strong,
-        residuals,
-    )
-    subset_summaries["knn_middle_diagnostics"] = subset_summary(
-        knn_middle_balanced_indices,
-        strong_train_labels,
-        weak_probs_strong,
-        residuals,
-    )
-    subset_summaries["knn_mixed_diagnostics"] = subset_summary(
-        knn_mixed_balanced_indices,
-        strong_train_labels,
-        weak_probs_strong,
-        residuals,
-    )
-    subset_summaries["committee_agree_diagnostics"] = subset_summary(
-        committee_agree_balanced_indices,
-        strong_train_labels,
-        weak_probs_strong,
-        residuals,
-    )
-    subset_summaries["committee_disagree_diagnostics"] = subset_summary(
-        committee_disagree_balanced_indices,
-        strong_train_labels,
-        weak_probs_strong,
-        residuals,
-    )
-
-    fmt = format_summary(args)
-    summary = build_summary(
+    write_run_outputs(
         args=args,
+        output_dir=output_dir,
+        plan=plan,
+        run_reports=run_reports,
+        prediction_columns=prediction_columns,
         best_map=best_map,
         best_row=best_row,
-        committee_agree_filter=committee_agree_filter,
-        committee_disagree_filter=committee_disagree_filter,
         committee_disagreement_strong=committee_disagreement_strong,
-        confidence_high_filter=confidence_high_filter,
-        confidence_middle_filter=confidence_middle_filter,
-        fmt=fmt,
-        knn_middle_filter=knn_middle_filter,
-        knn_mixed_filter=knn_mixed_filter,
+        device=device,
+        eval_examples=eval_examples,
         knn_stats=knn_stats,
-        middle_filter=middle_filter,
-        output_dir=output_dir,
-        random_summary=random_summary,
-        random_unbalanced_summary=random_unbalanced_summary,
-        run_reports=run_reports,
+        lora_examples=lora_examples,
+        residuals=residuals,
+        rp_scores=rp_scores,
         splits=splits,
         start=start,
+        strong_examples=strong_examples,
         strong_train_labels=strong_train_labels,
-        subset_summaries=subset_summaries,
         test_labels=test_labels,
+        weak_acts=weak_acts,
         weak_correct_weak_train=weak_correct_weak_train,
         weak_eval3_acc=weak_eval3_acc,
+        weak_eval_rows=weak_eval_rows,
         weak_preds_strong=weak_preds_strong,
         weak_preds_test=weak_preds_test,
         weak_probs_strong=weak_probs_strong,
     )
-
-    if args.save_activations:
-        torch.save(
-            {
-                "weak_activations": weak_acts,
-                "splits": {
-                    name: getattr(splits, name).to_pandas()
-                    for name in ["weak_train", "strong_train", "val", "test"]
-                },
-            },
-            output_dir / "activations.pt",
-        )
-
-    (output_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
-    write_text_report(output_dir / "paper_style_lora_report.txt", summary)
-    print(json.dumps(summary, indent=2))
-    print(f"Wrote outputs to {output_dir}")
 
 
 if __name__ == "__main__":
