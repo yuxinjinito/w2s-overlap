@@ -77,10 +77,14 @@ def representation_projection_scores(
         # my laptop and I both prefer to keep the O(n^3) as clean as possible
         pw_y = Kw @ np.linalg.solve(Kw + rw * eye, yc)
         a = yc - pw_y
-        # step 2: P_s a. same smoother, strong side, fitted right here in-sample.
-        # this being in-sample is load-bearing, not laziness: see the step-2 note
+        # step 2: P_s a. same smoother, strong side, fitted in-sample.
         v = Ks @ np.linalg.solve(Ks + rs * eye, a)
-    return np.abs(v)
+    scores = np.abs(v)
+    # the errstate above also mutes the warning that would surface a NaN, so this
+    # is the only place a poisoned input still makes noise
+    if not np.isfinite(scores).all():
+        raise ValueError("representation_projection_scores produced non-finite values")
+    return scores
 
 
 def _self_test() -> None:
@@ -91,7 +95,7 @@ def _self_test() -> None:
     hw, hs = rng.standard_normal((n, dw)), rng.standard_normal((n, ds))
     y = (rng.random(n) < 0.5).astype(float)
     s = representation_projection_scores(hw, hs, y)
-    assert s.shape == (n,) and np.all(s >= 0), "shape/non-neg failed"
+    assert s.shape == (n,), "shape failed"
 
     # 2) constant labels -> zero signal (if this fails something is very wrong)
     s_const = representation_projection_scores(hw, hs, np.ones(n))
