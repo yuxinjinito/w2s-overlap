@@ -1086,7 +1086,7 @@ def load_aquarat_multichoice_eval(n_questions: int, seed: int) -> list[dict]:
     return out
 
 
-def _quail_rows(split: str, seed: int):
+def quail_rows(split: str, seed: int):
     import random as _random
 
     ds = load_dataset("textmachinelab/quail", "default", split=split, revision="refs/convert/parquet")
@@ -1103,7 +1103,7 @@ def _quail_rows(split: str, seed: int):
     return rows
 
 
-def _riddlesense_rows(split: str, seed: int):
+def riddlesense_rows(split: str, seed: int):
     import random as _random
 
     ds = load_dataset("INK-USC/riddle_sense", "default", split=split, revision="refs/convert/parquet")
@@ -1150,7 +1150,7 @@ def _generic_mc_splits(train_rows, test_rows, prefix, n_train, n_val, n_test, se
     return SplitBundle(weak_train=halves["train"], strong_train=halves["test"], val=val, test=test_ds)
 
 
-def _generic_mc_eval(rows, prefix, n_questions, seed) -> list[dict]:
+def generic_mc_eval(rows, prefix, n_questions, seed) -> list[dict]:
     rng = random.Random(seed + 7)
     out: list[dict] = []
     for n_i, (base, options, gold) in enumerate(rows[:n_questions]):
@@ -1160,7 +1160,7 @@ def _generic_mc_eval(rows, prefix, n_questions, seed) -> list[dict]:
     return out
 
 
-def _scinli_rows(split: str, seed: int):
+def scinli_rows(split: str, seed: int):
     import random as _random
 
     ds = load_dataset("tasksource/scinli", split=split)
@@ -1181,17 +1181,17 @@ def _scinli_rows(split: str, seed: int):
 
 
 def load_paper_scinli_splits(n_train, n_val, n_test, seed) -> SplitBundle:
-    return _generic_mc_splits(_scinli_rows("train", seed), _scinli_rows("test", seed + 2),
+    return _generic_mc_splits(scinli_rows("train", seed), scinli_rows("test", seed + 2),
                               "scinli", n_train, n_val, n_test, seed)
 
 
 def load_paper_quail_splits(n_train, n_val, n_test, seed) -> SplitBundle:
-    return _generic_mc_splits(_quail_rows("train", seed), _quail_rows("validation", seed + 2),
+    return _generic_mc_splits(quail_rows("train", seed), quail_rows("validation", seed + 2),
                               "quail", n_train, n_val, n_test, seed)
 
 
 def load_paper_riddlesense_splits(n_train, n_val, n_test, seed) -> SplitBundle:
-    return _generic_mc_splits(_riddlesense_rows("train", seed), _riddlesense_rows("validation", seed + 2),
+    return _generic_mc_splits(riddlesense_rows("train", seed), riddlesense_rows("validation", seed + 2),
                               "riddlesense", n_train, n_val, n_test, seed)
 
 

@@ -11,6 +11,7 @@ The directory is flat, and every file is an experiment entry point, invoked from
 | `run_dream_paper_style_lora.sh`                                 | Single run, all knobs as environment variables.                                                                                                    |
 | `run_band_map_sweep.sh`                                         | The canonical sweep: many arms, many seeds, one dataset.                                                                                           |
 | `run_anli_band_map.sh`                                          | ANLI-pinned wrapper; fails loudly if handed another dataset.                                                                                       |
+| `contracts.py`                                                  | The shared row types, the custom-score slot names, and the per-arm seed offsets with a uniqueness assert. Imports nothing in the project.        |
 | `paper_style_datasets.py`                                       | The sixteen testbeds: loading, prompt formatting, splits, and the multiple-choice eval sets. A leaf layer, it calls nothing else in the pipeline. |
 | `paper_style_report.py`                                         | Metrics and every file a run writes: per-arm accuracy and AUROC, kept-set summaries, CSV dumps, and the text report beside summary.json.        |
 | `run_dream_w2s_baselines.py`, `run_dream_paper_linear_probe.py` | Imported by the pipeline for the baseline runs and the probe path.                                                                                 |
@@ -38,6 +39,7 @@ Run by hand on dumped activations; they decide which variants earn a GPU run.
 
 | File                                                                         | What it screens                                                        |
 | ---------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `sae_basis.py`                                                  | The small sparse autoencoder both SAE screens train.                   |
 | `joint_screen.py`                                                            | Basis, kernel, and regularization co-tuned over a grid.                |
 | `mlpstep2_screen.py`                                                         | In-sample capped MLP as the step-2 estimator, swept over weight decay. |
 | `lda_screen.py`, `sae_alignment_screen.py`, `screen_trio.py`                 | Discriminant, sparse-autoencoder, and mixed screens.                   |

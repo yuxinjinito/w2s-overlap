@@ -97,7 +97,7 @@ def split_texts(splits: SplitBundle) -> dict[str, list[str]]:
 
 
 def slice_activations(all_activations: torch.Tensor, sizes: dict[str, int]) -> dict[str, torch.Tensor]:
-    out: dict[str, torch.Tensor] = {}
+    out = {}
     start = 0
     for name in ["weak_train", "strong_train", "test"]:
         end = start + sizes[name]
@@ -114,10 +114,15 @@ def extract_all_activations(
     batch_size: int,
     max_length: int | None,
     desc: str,
+    layer: str | int = "end",
+    pooling: str = "last",
+    answer_span: bool = False,
+    answer_suffix: str = "",
+    span_kind: str = "answer",
 ) -> dict[str, torch.Tensor]:
     sizes = {name: len(texts_by_split[name]) for name in ["weak_train", "strong_train", "test"]}
     all_texts = texts_by_split["weak_train"] + texts_by_split["strong_train"] + texts_by_split["test"]
-    all_activations = extract_final_token_activations(
+    acts = extract_final_token_activations(
         model_name,
         all_texts,
         device,
@@ -125,8 +130,13 @@ def extract_all_activations(
         batch_size,
         max_length,
         desc,
+        layer=layer,
+        pooling=pooling,
+        answer_span=answer_span,
+        answer_suffix=answer_suffix,
+        span_kind=span_kind,
     )
-    return slice_activations(all_activations, sizes)
+    return slice_activations(acts, sizes)
 
 
 def fit_maps(

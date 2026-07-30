@@ -69,7 +69,7 @@ def main():
     if not args.no_sae:
         import sys
         sys.path.insert(0, "scripts")
-        from sae_alignment_screen import train_sae, encode
+        from sae_basis import train_sae, encode
         bulk = np.load(args.bulk)
         for tag, l1 in (("saeA", 1e-3), ("saeB", 3e-3)):
             sw, muw, sdw, _ = train_sae(bulk["weak"].astype(np.float32), 8 * 896, l1, dev, seed=1)

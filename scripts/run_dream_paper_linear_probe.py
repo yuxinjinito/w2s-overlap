@@ -14,6 +14,10 @@ Matched original choices:
 - Activations are final-layer, final-token hidden states.
 - Weak, strong, and W2S models are logistic linear probes over activations.
 - W2S uses weak-probe soft probabilities on strong_train as pseudolabels.
+
+Beyond the rerun itself, this file serves the probe helpers (fit_probe,
+predict_probe, extract_final_token_activations) to the pipeline and the older
+entry points; the Dream loaders it once held now live in paper_style_datasets.
 """
 
 from __future__ import annotations

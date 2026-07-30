@@ -37,10 +37,12 @@ from run_dream_paper_linear_probe import (
     resolve_device,
 )
 from run_dream_paper_residual_filtering import (
+    extract_all_activations,
     fit_maps,
     hard_weak_label_balance,
     middle_residual_indices,
     random_balanced_indices,
+    slice_activations,
     subset_summary,
 )
 from run_dream_w2s_baselines import (
@@ -59,10 +61,10 @@ from lda_alignment import lda_alignment_scores
 from excess_loss import excess_loss_kway_scores, option_entropy
 from contracts import LoraExample
 from paper_style_datasets import (
-    _generic_mc_eval,
-    _quail_rows,
-    _riddlesense_rows,
-    _scinli_rows,
+    generic_mc_eval,
+    quail_rows,
+    riddlesense_rows,
+    scinli_rows,
     load_anli_multichoice_eval,
     load_aquarat_multichoice_eval,
     load_conjnli_multichoice_eval,
@@ -511,60 +513,6 @@ def run_knn_saturation_diagnostics(
 
     del weak_train_acts, strong_diag_acts, strong_weak_train_acts, strong_strong_train_acts
     clear_memory()
-
-
-def slice_activations(all_activations: torch.Tensor, sizes: dict[str, int]) -> dict[str, torch.Tensor]:
-    out = {}
-    start = 0
-    for name in ["weak_train", "strong_train", "test"]:
-        end = start + sizes[name]
-        out[name] = all_activations[start:end]
-        start = end
-    return out
-
-
-def extract_all_activations(
-    model_name: str,
-    texts_by_split: dict[str, list[str]],
-    device: torch.device,
-    dtype_arg: str,
-    batch_size: int,
-    max_length: int | None,
-    desc: str,
-    layer: str | int = "end",
-    pooling: str = "last",
-    answer_span: bool = False,
-    answer_suffix: str = "",
-    span_kind: str = "answer",
-) -> dict[str, torch.Tensor]:
-    sizes = {name: len(texts_by_split[name]) for name in ["weak_train", "strong_train", "test"]}
-    all_texts = texts_by_split["weak_train"] + texts_by_split["strong_train"] + texts_by_split["test"]
-    acts = extract_final_token_activations(
-        model_name,
-        all_texts,
-        device,
-        dtype_arg,
-        batch_size,
-        max_length,
-        desc,
-        layer=layer,
-        pooling=pooling,
-        answer_span=answer_span,
-        answer_suffix=answer_suffix,
-        span_kind=span_kind,
-    )
-    return slice_activations(acts, sizes)
-
-
-def weak_label_balance(
-    examples: list[LoraExample],
-    labels: list[int],
-    seed: int,
-) -> tuple[list[LoraExample], list[int], np.ndarray]:
-    indices = np.arange(len(examples))
-    weak_preds = np.array(labels, dtype=int)
-    selected = hard_weak_label_balance(indices, weak_preds, seed)
-    return [examples[int(i)] for i in selected], [int(labels[int(i)]) for i in selected], selected
 
 
 def scores_to_weights(scores: np.ndarray, temperature: float) -> np.ndarray:
@@ -1488,11 +1436,11 @@ def prepare_multichoice_eval(*, args, device, output_dir, weak_probe) -> tuple[l
         elif args.dataset == "aquarat":
             multichoice_rows = load_aquarat_multichoice_eval(args.n_eval_questions, args.seed + 2)
         elif args.dataset == "quail":
-            multichoice_rows = _generic_mc_eval(_quail_rows("validation", args.seed + 2), "quail", args.n_eval_questions, args.seed + 2)
+            multichoice_rows = generic_mc_eval(quail_rows("validation", args.seed + 2), "quail", args.n_eval_questions, args.seed + 2)
         elif args.dataset == "riddlesense":
-            multichoice_rows = _generic_mc_eval(_riddlesense_rows("validation", args.seed + 2), "riddlesense", args.n_eval_questions, args.seed + 2)
+            multichoice_rows = generic_mc_eval(riddlesense_rows("validation", args.seed + 2), "riddlesense", args.n_eval_questions, args.seed + 2)
         elif args.dataset == "scinli":
-            multichoice_rows = _generic_mc_eval(_scinli_rows("test", args.seed + 2), "scinli", args.n_eval_questions, args.seed + 2)
+            multichoice_rows = generic_mc_eval(scinli_rows("test", args.seed + 2), "scinli", args.n_eval_questions, args.seed + 2)
         else:
             multichoice_rows = []
         if multichoice_rows:
