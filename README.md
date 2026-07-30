@@ -36,7 +36,7 @@ destroys the score, and `scripts/mlp_rp.py` has the controlled swaps.
 
 ## Headline result
 
-Research in progress. 
+Research in progress.
 
 ## Repository layout
 
@@ -52,8 +52,9 @@ scripts/                          # flat by design: modules import each other as
   lda_*.py, sae_*.py, cca_*.py,
   robust_linear.py, mlp_alignment.py   # alternative-selector family (all closed negatives)
   diagnose_*.py, dump_bulk_acts.py     # diagnostics and activation dumps
-docs/                             # method notes and per-experiment commands
-experiments/, figures/            # dated analysis artifacts and generated figures
+  README.md                       # index of every script, by role
+docs/                             # method, commands, and current results
+experiments/                      # dated analysis artifacts
 results/                          # run outputs (gitignored)
 ```
 
@@ -98,6 +99,6 @@ If you use this code, please cite the two papers it builds on, the theory
 ([arXiv:2502.00620](https://arxiv.org/abs/2502.00620)) and the data-centric
 W2S framing ([arXiv:2412.03881](https://arxiv.org/abs/2412.03881),
 reference implementation
-`[SprocketLab/datacentric_w2s](https://github.com/SprocketLab/datacentric_w2s)`)
+[`SprocketLab/datacentric_w2s`](https://github.com/SprocketLab/datacentric_w2s))
 alongside this repository. A paper describing the method here is in
 preparation; a citation entry will replace this line when it is available.

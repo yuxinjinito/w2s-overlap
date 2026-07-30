@@ -1,156 +1,110 @@
 # Reproducing the experiments
 
-All commands are run from the repository root. Outputs are written under `results/` (gitignored).
-The commands below are the exact ones used, with representative observed metrics so you can sanity-
-check a rerun. See [`method.md`](method.md) for what each stage does.
+All commands run from the repository root. Outputs go to `results/` (gitignored). See
+`[method.md](method.md)` for what each stage does and `[results.md](results.md)` for the
+reporting conventions a rerun is checked against.
 
 ## Environment
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-huggingface-cli login   # needed for gated meta-llama/Llama-3.1-8B weights
 ```
 
-- **Compute:** a single CUDA GPU. The 8B LoRA runs fit in ~16 GB peak on a 24 GB card (e.g. RTX 4090).
-- **Seeds:** `42` unless noted; deterministic inference runs do not depend on the seed.
-- **Splits:** following the EleutherAI/Burns-style W2S setup, training data is split into a
-  weak-training pool (`Dtrain`) and a weak-to-strong pool (`Dw2s` / `strong_train`).
+A single 24 GB CUDA GPU is enough. The default pair is Qwen2.5-0.5B (weak, frozen, with
+a probe) supervising Qwen2.5-7B (strong, LoRA), both ungated. The pair has to come from one family: with a cross-family pair the tokenizers differ
+and rp stops working.
 
-## 1. Inference + weak confidence
+Two seeds are separate. The data seed (`--seed`) fixes splits, cross-fitting folds, and
+class balancing. The training seed (`--train-seed`, or `TRAIN_SEEDS` in the wrappers) fixes LoRA initialization and batch order. Reported numbers are means over training seeds at a fixed data seed.
 
-SST-2 sequence-classification smoke test:
+## Check the install before spending GPU time
+
+The two score modules run their own checks, on CPU:
 
 ```bash
-python3 scripts/run_inference_confidence.py \
-  --mode seqcls --dataset sst2 --split validation --limit 128 \
-  --weak-model distilbert-base-uncased-finetuned-sst-2-english \
-  --strong-model textattack/bert-base-uncased-SST-2 \
-  --output results/inference_confidence/sst2_smoke.csv
+python scripts/representation_projection.py
+python scripts/mlp_rp.py
 ```
 
-BoolQ causal-LM yes/no scoring (128 examples): weak ≈ 0.36, strong ≈ 0.68 accuracy;
-weak/strong agree on ~29% of examples.
+The first takes seconds, the second a couple of minutes. If either one fails, the
+environment is wrong, and a full run would have told you the same thing three hours
+later.
+
+## A full run
+
+The canonical sweep is one dataset, many arms, three training seeds:
 
 ```bash
-python3 scripts/run_inference_confidence.py \
-  --mode causal_lm_yesno --dataset boolq --split validation --limit 128 \
-  --weak-model Qwen/Qwen1.5-0.5B --strong-model Qwen/Qwen1.5-1.8B \
-  --torch-dtype float16 \
-  --output results/inference_confidence/boolq_qwen_smoke_128.csv
+ANLI_ROUND=r1 TRAIN_SEEDS="42 123 456" bash scripts/run_anli_band_map.sh
 ```
 
-## 2. Probe-based weak confidence
+This trains the base and gold-label anchors once, then one LoRA fine-tune per arm per
+seed, and writes a `summary.json` per run with the full configuration, per-arm
+accuracy, and kept-set diagnostics. Expect a few hours.
 
-Fit a logistic probe on weak final-token activations (BoolQ, 512 train / 128 eval): eval probe
-accuracy ≈ 0.66; confidence remains high relative to accuracy (uncalibrated).
+Useful environment variables, all read by the wrappers:
+
+
+| Variable               | Meaning                                                                           |
+| ---------------------- | --------------------------------------------------------------------------------- |
+| `FILTER_RUNS`          | Comma-separated arm names, for example `rp_high_balanced_f50,random_balanced_f50` |
+| `TRAIN_SEEDS`          | Space-separated LoRA seeds                                                        |
+| `COMMITTEE_KEEP_FRACS` | Keep fractions, for example `0.5` or `0.1,0.2,0.3`                                |
+| `OUTPUT_ROOT`          | Where the run writes                                                              |
+| `EVAL_3CLASS`          | Multiple-choice evaluation (on by default in the ANLI wrapper)                    |
+| `DUMP_ACTS`            | Also write the weak and strong activations to a file, so screens can run without the models             |
+| `CUSTOM_SCORES_NPZ`    | Inject externally computed scores, see below                                      |
+
+
+For a dataset other than ANLI use `run_band_map_sweep.sh` with `DATASET` set. The ANLI
+wrapper is pinned and will refuse another dataset.
+
+Arm names follow `<score>_<band>_balanced_f<percent>`. The band is `high`, `low`, or
+`middle`, and `balanced` means the kept set is class-balanced on the weak labels before
+training.
+
+## Offline screens
+
+Designing a new score is a loop. One GPU run dumps the activations, screens then try
+many candidate scores on that dump using only CPU, and the few that look worth it go
+back through the pipeline as new arms.
 
 ```bash
-python3 scripts/run_probe_confidence.py \
-  --dataset boolq --train-limit 512 --eval-limit 128 \
-  --weak-model Qwen/Qwen1.5-0.5B --torch-dtype float16 \
-  --batch-size 8 --epochs 150 --lr 0.003 --weight-decay 0.01 \
-  --output results/probe_confidence/boolq_qwen05_probe_128.csv \
-  --activation-output results/probe_confidence/boolq_qwen05_probe_acts_128.pt
+# once, on GPU: run the pipeline and keep the activations
+DUMP_ACTS=acts_r1.npz ANLI_ROUND=r1 TRAIN_SEEDS=42 bash scripts/run_anli_band_map.sh
+
+# then, on CPU, as many times as you like
+python scripts/mlpstep2_screen.py --acts acts_r1.npz --wd-grid 0.01,1,10,30
+python scripts/joint_screen.py --labeled acts_r1.npz --out-scores custom_scores.npz
 ```
 
-The stricter reference-style weak-probe path (weak confidence on the `strong_train` split):
+The dump holds both activation matrices, the weak labels, and the gold labels the
+screens use to measure separation. Recomputing it means loading both models and a
+forward pass over every row, which is why one dump serves a whole round of screening.
+
+
+
+## Injecting your own score
+
+Any per-example score can enter the pipeline without touching it. Write an npz with one
+to four score vectors named `cs1` through `cs4`, plus the `weak_preds` vector the scores
+were computed against, then:
 
 ```bash
-python3 scripts/run_reference_probe.py \
-  --dataset boolq --weak-model Qwen/Qwen1.5-0.5B \
-  --n-train 1024 --n-val 128 --n-test 128 --target-split strong_train \
-  --torch-dtype float16 --batch-size 4 \
-  --output results/reference_style/boolq_qwen05_weakprobe_on_strong_train.csv \
-  --activation-output results/reference_style/boolq_qwen05_weakprobe_on_strong_train_acts.pt
+CUSTOM_SCORES_NPZ=/path/scores.npz \
+FILTER_RUNS=cs1_high_balanced_f50,cs1_low_balanced_f50,random_balanced_f50 \
+ANLI_ROUND=r1 TRAIN_SEEDS="42 123 456" bash scripts/run_anli_band_map.sh
 ```
 
-A multi-dataset confidence sweep (used for the answer-count vs skew analysis) is driven by
-`scripts/run_paper10_confidence_batch.sh`.
+The pipeline compares the stored `weak_preds` against the weak labels it computes itself
+and refuses to run if they disagree on more than 5% of rows. Scores computed on one
+machine and used on another can drift apart through fp16 differences in the probe, and
+the guard catches that before it becomes a silent misalignment.
 
-## 3. Weak→strong representation mapping
+## Reading the output
 
-Fit linear / Procrustes / ReLU maps on the full 512-example `strong_train` split and compare
-per-sample residuals against weak confidence/correctness:
-
-```bash
-python3 scripts/run_representation_mapping.py \
-  --dataset boolq --weak-model Qwen/Qwen1.5-0.5B --strong-model Qwen/Qwen1.5-1.8B \
-  --target-split strong_train --n-train 1024 --n-val 128 --n-test 128 \
-  --max-examples 512 --torch-dtype float16 --batch-size 2 \
-  --pooling mean --map-train-frac 0.5 --ridge 1e-3 \
-  --relu-hidden-dim 256 --relu-epochs 200 \
-  --output results/representation_mapping/boolq_qwen05_to_qwen18_map_512.csv \
-  --summary-output results/representation_mapping/boolq_qwen05_to_qwen18_map_512.json \
-  --embedding-output results/representation_mapping/boolq_qwen05_to_qwen18_map_512.pt
-
-python3 scripts/analyze_mapping_vs_confidence.py \
-  results/representation_mapping/boolq_qwen05_to_qwen18_map_512.csv \
-  --confidence-csv results/reference_style/boolq_qwen05_weakprobe_on_strong_train.csv \
-  --merge-on id --primary-loss linear_l2 --plot-heldout-only \
-  --report-output results/representation_mapping/boolq_qwen05_to_qwen18_map_512_vs_confidence.txt
-```
-
-Observed: held-out mapping residual has little linear relationship with weak confidence or
-correctness on this model/dataset/pooling choice. The full Llama-3.1-8B mapping is driven by
-`scripts/run_llama31_mapping_full.sh`.
-
-## 4. 8B LoRA feasibility smoke test
-
-```bash
-pip install -r requirements.txt   # peft included
-bash scripts/run_strong_lora_smoke.sh
-```
-
-Observed: 3 LoRA steps on `meta-llama/Llama-3.1-8B`, loss 2.52 → 1.64, peak ~15.4 GB,
-~21 M trainable / 8.05 B total params.
-
-## 5. Dream W2S baselines
-
-```bash
-OUTPUT_DIR=results/w2s_dream_baselines/dream_lora_fixed bash scripts/run_dream_w2s_baselines.sh
-```
-
-Config: `n_weak_train=2048, n_strong_train=512, n_eval=256, max_length=384`, LoRA `r=8, alpha=16,
-dropout=0.05`, `max_train_steps=100, batch_size=1, grad_accum=4, lr=2e-4, float16`.
-Observed: base ≈ 0.730, ground-truth-LoRA ≈ 0.859, weak-label-LoRA ≈ 0.551 (collapses to one class;
-Dream weak labels are noisy/skewed, weak label-1 rate ≈ 0.77).
-
-## 6. Residual-based overlap filtering
-
-```bash
-BASELINE_OUTPUT_DIR=results/w2s_dream_baselines/dream_residual_filter_mid50 \
-RESIDUAL_FILTER_CSV=results/representation_mapping/<dream_map>/best_map_residuals.csv \
-OUTPUT_DIR=results/w2s_dream_baselines/dream_residual_filter_extras \
-bash scripts/run_dream_residual_filter_extras.sh
-```
-
-Observed (LoRA setup): residual-match alone collapses to one class; weak-label balancing alone does
-not improve accuracy; **residual-middle + weak-label balancing** ≈ 0.762 — a first positive signal
-(+0.03 over base, +0.23 over all-weak-label, −0.10 vs ground-truth).
-
-## 7. Paper-faithful linear-probe replication
-
-```bash
-bash scripts/run_dream_paper_linear_probe.sh
-bash scripts/run_dream_paper_residual_filtering.sh
-```
-
-Observed: weak probe ≈ 0.603, strong-ground-truth probe ≈ 0.739, Full-W2S probe ≈ 0.589 (close to
-Figure A1 scale for Dream). Under this cleaner setup the residual-middle rule ≈ random balanced
-controls (≈ 0.58–0.60), i.e. it does **not** help — so the LoRA positive above is setup-specific.
-
-## 8. Selection-method comparisons and cross-dataset transfer
-
-The confidence / residual / kNN selection comparisons and stability sweeps are driven by wrappers
-that call `scripts/run_dream_paper_style_lora.py`:
-
-```bash
-bash scripts/run_dream_lora_stability_sweep.sh                 # stabilize LoRA params
-bash scripts/run_dream_lora_filtering_comparison.sh            # confidence vs residual filtering
-bash scripts/run_dream_lora_knn_mixed_filtering_comparison.sh  # kNN mixed-neighborhood selection
-bash scripts/run_sciq_paper_style_lora.sh                      # SciQ transfer
-bash scripts/run_paws_paper_prompt_smoke.sh                    # PAWS transfer
-```
-
-Each wrapper documents its own dataset/config presets at the top of the file.
+Each run directory holds `summary.json` (configuration, per-arm evaluation, kept-set
+label purity) and per-arm prediction CSVs. The number we report is
+`runs.<arm>.eval.accuracy_3class`, averaged over training seeds, with the base and
+gold-label anchors from the same run's baseline directory.

@@ -1,131 +1,119 @@
 # Method
 
-This document states the problem, research questions, hypotheses, and the methods implemented in
-this repository. For exact commands and metrics see [`reproducing.md`](reproducing.md); for a
-summary of findings see [`results.md`](results.md).
+The problem, the score, and the rules that constrain anything built on it. For commands
+see `[reproducing.md](reproducing.md)`; for what has been measured see `[results.md](results.md)`.
 
 ## Problem setting
 
-In weak-to-strong (W2S) generalization, a weak teacher model produces (pseudo-)labels that are used
-to fine-tune a stronger student model. The **data-centric** view of W2S partitions training
-examples into three regions:
+A weak model supervises a stronger one. We fine-tune a weak model on a labeled split,
+use it to label a second split, and train the strong model on those weak labels. The
+question this repository asks is which of the weakly labeled rows the strong model
+should train on, decided without looking at gold labels.
 
-- **easy** — both weak and strong models already handle them;
-- **overlap** — weak supervision is informative for the strong model;
-- **hard** — weak labels are unreliable and may hurt the strong model.
+Three reference points bracket every result. The weak model's own accuracy is the
+floor, the strong model trained on gold labels is the ceiling, and the strong model
+trained on all weak labels with no filtering is the point any selector has to beat. We
+report PGR, `(acc - base) / (gold - base)`, so runs with different anchors stay
+comparable.
 
-The seed paper (*Weak-to-Strong Generalization Through the Data-Centric Lens*, arXiv:2412.03881)
-argues that the overlap region drives W2S generalization and detects it with a relatively simple
-discrete rule. This project asks whether overlap can be detected **more smoothly and more directly
-from representation geometry and weak-model confidence**, and whether such a signal **improves
-downstream W2S training**.
+## Task format
 
-## Research questions
+Every dataset is reduced to binary rows. A K-way question becomes K rows, one per
+candidate answer, each asking whether that candidate is correct:
 
-1. **Geometry.** Are examples the weak model gets *correct* vs *incorrect* separable in an auxiliary
-   embedding space?
-2. **Mapping.** How well can weak-model representations be mapped into strong-model representations,
-   and do per-sample mapping **residuals** identify structure (features available only to the strong
-   model, harder examples, or overlap)?
-3. **Selection.** Can a continuous overlap/usefulness score — from weak confidence and/or
-   embedding-neighborhood geometry — **select or weight data** so that weak-to-strong fine-tuning
-   beats (a) using all weak labels and (b) the original discrete overlap rule?
-4. **Scope.** Does the signal generalize across datasets (Dream → SciQ → PAWS) and beyond binary
-   candidate-answer correctness?
+```
+<question and candidate answer>
+Is the candidate answer correct? Answer:
+```
 
-## Hypotheses
+The strong model is scored with a yes/no head, and the multiple-choice accuracy we
+report picks the highest-scoring candidate per question. One format for all three
+stages means the weak probe, the selection score, and the LoRA fine-tune read the same
+representation of the task.
 
-- **H1.** In at least one classification setting from the seed paper, weak-correct and weak-incorrect
-  examples show non-random structure in an auxiliary embedding space.
-- **H2.** A smoother overlap score (weak confidence + embedding-neighborhood similarity) is more
-  informative for data selection than a discrete easy/overlap/hard label.
-- **H3.** A learned weak→strong representation map has structured per-sample residuals: low residual
-  ≈ features already available to the weak model; high residual ≈ strong-only structure or harder
-  examples.
-- **H4.** Overlap-like points lie near decision boundaries / in mixed weak-correct vs weak-wrong
-  neighborhoods, which connects the selection rule to semi-supervised and active learning.
+## Weak labels
 
-Failure modes worth testing: embedding separation may be weak or dataset-specific; weak confidence
-may already explain most of the signal; a linear map may be too simple while a ReLU map may overfit;
-and a score that looks clean diagnostically may still fail to improve downstream training.
+The weak supervisor is a logistic probe fit on the weak model's final-token activations
+over the weak split, then applied to the strong split. It is not the weak model's own
+generation. Labels are hard, thresholded at 0.5. Soft probabilities perform the same
+downstream, and a logit-difference target is still under test.
 
-## Method components
+## Representations
 
-### 1. Task formatting
+Both models are run over the same rows and we keep the final-layer, final-token
+activation of the full prompt. Both choices were settled by ablation rather than
+assumption. Reading the middle layer instead leaves rp close to random, and
+mean-pooling over tokens inverts the score's high/low direction outright.
 
-Multiple-choice / QA datasets are reformatted as **binary candidate-answer correctness**: for each
-question a candidate answer (the true answer or a distractor) is sampled, and the model judges
-whether the candidate is correct (`question + candidate → yes/no`). This matches the seed paper's
-reference implementation and makes weak/strong predictions, confidence, and probes comparable across
-datasets. A Dream 3-class variant is also implemented for the "beyond binary" direction.
+## The rp score
 
-### 2. Weak-model confidence
+With column-centered representations, build one Gram kernel per side, `K = X X^T / n`,
+and turn each into a ridge smoother
 
-Two paths produce a per-example weak confidence in `[0, 1]`:
+```
+P = K (K + reg * (tr(K)/n) * I)^{-1},    reg = 0.1
+```
 
-- **Generative yes/no** — score `" yes"` vs `" no"` continuations of a causal LM.
-- **Activation probe** — extract weak final-token hidden states and fit a small logistic probe.
+The regularizer is scaled by the average kernel eigenvalue so that the same `reg` means
+the same thing on a 896-dimensional weak representation and a 3584-dimensional strong
+one. With centered weak labels `y_c`:
 
-Both use the binary confidence `confidence = 2·|P(label=1) − 0.5|`, which is 0 for maximally
-uncertain predictions and 1 for confident ones.
+```
+step 1 (weak side):    a = (I - P_w) y_c
+step 2 (strong side):  v = P_s a
+score:                 s_i = |v_i|
+```
 
-### 3. Representation extraction
+Step 1 removes the part of the labels the weak representation can explain. Step 2 asks
+how much of that leftover the strong representation can express. A high score marks a
+row whose label is illegible to the weak model and legible to the strong one, which is
+the kind of row weak-to-strong training should benefit from. Keeping the top half is
+what works downstream.
 
-For each prompt, hidden states are taken from the layer **before `lm_head`**. Token-level states are
-aggregated into one prompt vector. The paper-faithful path uses the **final-token** state; some
-mapping experiments use **mean pooling** over non-padding tokens. Both are supported and the choice
-is logged per experiment.
+Centering the labels keeps the class prior from entering through the constant
+direction, which would otherwise degrade the score into a ranking by majority class.
 
-### 4. Weak→strong representation mapping
+The score is the per-example form of the quantity that governs the prediction gap in
+*Representations Shape Weak-to-Strong Generalization* (arXiv:2502.00620). That paper
+uses the aggregate norm to predict how well a given weak supervisor will do, and never
+filters data with it. Two things differ here. We read the per-example entries rather
+than the norm, and we substitute cross-fitted weak labels for the gold labels the
+theorem assumes.
 
-Given matched weak and strong prompt representations, fit maps from weak space to strong space:
+Neither step inherits the theorem's guarantee, so the evidence for the score is
+downstream training, not the theory.
 
-- **linear regression** (optionally ridge-regularized / centered),
-- **Procrustes / orthogonal** mapping,
-- a **1-layer ReLU** network (a nonlinear version of the same test).
+## Variants and what they showed
 
-Outputs saved for analysis: the learned map `A`, its **singular values** (how much it stretches /
-shrinks directions), and the **per-sample residual L2** between the mapped weak vector and the true
-strong vector (lower = better alignment). Train/heldout splits are kept separate so residuals are
-read on held-out points.
+`mlpstep1` replaces the weak-side solve with a heavily weight-decayed MLP, still
+cross-fitted, and leaves step 2 alone. It matches rp everywhere tested and beats it on
+two beds. A linear model pushed through the same cross-fitted harness reproduces rp, so
+the credit belongs to the regularized nonlinearity rather than to the cross-fitting.
 
-### 5. Weak-to-strong LoRA training
+Swapping the other pieces produced the working rules below. They are what the runs so
+far support, at the confidence each one has earned.
 
-On the strong model (`Llama-3.1-8B`, LoRA), three baselines:
+The two sides are not interchangeable. Replacing step 2 with an out-of-fold estimator
+drops rank agreement with rp to about .62 for a cross-fitted MLP and .64 for a
+cross-fitted linear model, and the MLP version was also run downstream on three beds,
+where it lost to rp on all three. The linear version has only the agreement number so
+far. The reading we work from is that step 2 is a membership test rather than a
+prediction problem, since it asks whether the leftover lies inside the strong model's
+expressible space, and out-of-fold fitting answers a different question. Step 1 behaves
+the opposite way and takes cross-fitting without complaint.
 
-- **base** — no fine-tuning;
-- **ground-truth** — LoRA on gold labels (an upper-reference);
-- **weak-label** — LoRA on weak pseudo-labels (the W2S baseline to beat).
+An in-sample fit with no capacity cap degenerates. For the kernel this is analytic: as
+`reg` goes to zero, `P_s` approaches the identity and the score collapses onto step 1's
+residual, so the strong side stops filtering. For a learned map the failure is
+memorization of the target, which we have observed in the alignment setting. Whether a
+capped in-sample network is a useful step-2 estimator is currently being tested and is
+not settled.
 
-### 6. Overlap-based data selection
+Direction is checked, not assumed. rp and its step-1 variants keep the same useful end
+on every bed measured so far. The auxiliary signals do not: both forms of the
+excess-loss score, and the effect of training order on a fixed kept set, reverse sign
+between testbeds. Each new score is therefore run downstream in both bands.
 
-Selection rules applied to the weak-labeled training pool, each evaluated by the resulting strong
-model's accuracy and compared to random controls of equal size:
+## Alternatives that were closed
 
-- **residual-middle** — keep the central band of the residual distribution, drop low/high residuals;
-- **weak-confidence middle** — prune both very confident and very unconfident points;
-- **kNN mixed-neighborhood** — in strong-embedding space, keep points whose nearest weak-training
-  neighbors are *mixed* (some weak-correct, some weak-wrong) rather than uniformly easy or hard;
-  both balanced and unbalanced variants are tested.
-
-### 7. Paper-faithful linear probing
-
-A separate path replicates the seed paper's Figure A1 setup as closely as possible: Qwen1.5-0.5B
-weak activations, Llama-3.1-8B strong activations, final-token states, and **logistic linear
-probes** for weak, strong-ground-truth, and Full-W2S accuracy. This separates *replication* from the
-*LoRA/selection extension* so the two are not conflated.
-
-## Evaluation discipline
-
-Every experiment records which original-paper result/setup it is compared against and lists known
-deviations (dataset size, split, model version, training method, prompt/task format, evaluation
-size, seeds). The known deviations from the seed paper's LLM setup are:
-
-- weak/strong pair (Qwen1.5-0.5B → Llama-3.1-8B) vs the paper's Qwen1.5-0.5B → Llama3-8B;
-- training method (LoRA + generative yes/no scoring) vs the paper's linear probing for Figure A1;
-- smaller training/eval slices than the paper's full sampling;
-- a more explicit candidate-correctness prompt with a generated yes/no target;
-- mean pooling in some mapping runs vs the paper's final-token activations.
-
-The paper-faithful linear-probe path above exists specifically to control for these differences when
-a direct numeric comparison is needed.
+Label-free alignment residuals (linear, Procrustes, CCA, an MLP projector), discriminant read-outs of the residual in several forms, sparse-autoencoder bases, hard spectral truncation, and kernel or basis combinations tuned jointly were all measured against rp. None beat it, several are actively harmful, and the code for each is still in `scripts/`.
