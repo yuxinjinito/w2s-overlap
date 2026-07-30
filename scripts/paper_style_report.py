@@ -13,6 +13,8 @@ import argparse
 import csv
 import math
 import random
+import time
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -513,3 +515,148 @@ def write_text_report(path: Path, summary: dict) -> None:
         ]
     )
     path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def build_summary(
+    *,
+    args,
+    best_map,
+    best_row,
+    committee_agree_filter,
+    committee_disagree_filter,
+    committee_disagreement_strong,
+    confidence_high_filter,
+    confidence_middle_filter,
+    fmt,
+    knn_middle_filter,
+    knn_mixed_filter,
+    knn_stats,
+    middle_filter,
+    output_dir,
+    random_summary,
+    random_unbalanced_summary,
+    run_reports,
+    splits,
+    start,
+    strong_train_labels,
+    subset_summaries,
+    test_labels,
+    weak_correct_weak_train,
+    weak_eval3_acc,
+    weak_preds_strong,
+    weak_preds_test,
+    weak_probs_strong,
+) -> dict:
+    """Assemble the summary.json payload.
+
+    One flat record per run: the configuration that produced it, the weak-label
+    diagnostics, the per-arm evaluation, and the kept-set diagnostics. Anything
+    reported anywhere else has to be traceable back to a field here.
+    """
+    summary = {
+        "dataset": args.dataset,
+        "source": "paper_style_lora",
+        "weak_model": args.weak_model,
+        "strong_model": args.strong_model,
+        "seed": args.seed,
+        "requested_sizes": {
+            "n_train": args.n_train,
+            "n_val": args.n_val,
+            "n_test": args.n_test,
+        },
+        "actual_sizes": {
+            "weak_train": len(splits.weak_train),
+            "strong_train": len(splits.strong_train),
+            "val": len(splits.val),
+            "test": len(splits.test),
+        },
+        "format": {
+            "task": fmt["task"],
+            "candidate_text": fmt["candidate_text"],
+            "lora_prompt": "candidate_text + answer_suffix",
+            "label": fmt["label"],
+            "takeaway": fmt["takeaway"],
+        },
+        "answer_suffix": args.answer_suffix,
+        "activation": {
+            "weak_label_probe": "LBFGS logistic probe on final-layer final-token weak activations",
+            "mapping": "weak/strong final-layer final-token activations",
+            "activation_max_length": args.activation_max_length,
+        },
+        "lora": {
+            "max_length": args.max_length,
+            "max_train_steps": args.max_train_steps,
+            "batch_size": args.strong_batch_size,
+            "gradient_accumulation_steps": args.gradient_accumulation_steps,
+            "lr": args.lr,
+            "weight_decay": args.weight_decay,
+            "warmup_steps": args.warmup_steps,
+            "max_grad_norm": args.max_grad_norm,
+            "lora_r": args.lora_r,
+            "lora_alpha": args.lora_alpha,
+            "lora_dropout": args.lora_dropout,
+            "lora_target_modules": [item.strip() for item in args.lora_target_modules.split(",") if item.strip()],
+            "train_seed": args.train_seed,
+        },
+        "weak_label_diagnostics": {
+            "accuracy": float(np.mean(weak_preds_strong == strong_train_labels)),
+            "positive_rate": float(np.mean(weak_preds_strong)),
+            "soft_prob_label1_mean": float(np.mean(weak_probs_strong)),
+            "eval_accuracy": float(np.mean(weak_preds_test == test_labels)),
+            "weak_train_accuracy": float(np.mean(weak_correct_weak_train)),
+            "accuracy_3class": weak_eval3_acc,
+        },
+        "map": {
+            "best_name": best_map.name,
+            "heldout_l2_mean": float(best_row["heldout_l2_mean"]),
+            "heldout_l2_median": float(best_row["heldout_l2_median"]),
+            "heldout_cosine_mean": float(best_row["heldout_cosine_mean"]),
+            "spectral_norm": float(best_row["spectral_norm"]),
+            "top20_energy": float(best_row["top20_energy"]),
+        },
+        "middle_filter": middle_filter,
+        "confidence_filters": {
+            "middle": confidence_middle_filter,
+            "high": confidence_high_filter,
+        },
+        "knn_filter": {
+            "k": args.knn_k,
+            "reference_split": "weak_train",
+            "query_split": "strong_train",
+            "embedding": "strong model activations",
+            "activation_layer": args.representation_layer,
+            "activation_pooling": args.representation_pooling,
+            "distance": "cosine similarity",
+            "middle": knn_middle_filter,
+            "mixed": knn_mixed_filter,
+            "knn_correct_rate_mean": float(np.mean(knn_stats["knn_correct_rate"])),
+            "knn_correct_rate_median": float(np.median(knn_stats["knn_correct_rate"])),
+            "knn_correct_rate_min": float(np.min(knn_stats["knn_correct_rate"])),
+            "knn_correct_rate_max": float(np.max(knn_stats["knn_correct_rate"])),
+        },
+        "committee_filter": {
+            "members": args.committee_members,
+            "score": "std of bootstrap committee weak-probe probabilities on strong_train",
+            "reference_split": "weak_train (bootstrap resamples)",
+            "query_split": "strong_train",
+            "agree": committee_agree_filter,
+            "disagree": committee_disagree_filter,
+            "disagreement_mean": float(np.mean(committee_disagreement_strong)),
+            "disagreement_median": float(np.median(committee_disagreement_strong)),
+        },
+        "runs": run_reports,
+        "random_unbalanced_controls_summary": random_unbalanced_summary,
+        "random_balanced_controls_summary": random_summary,
+        "subset_summaries": subset_summaries,
+        "outputs": {
+            "summary": str(output_dir / "summary.json"),
+            "text_report": str(output_dir / "paper_style_lora_report.txt"),
+            "eval_predictions": str(output_dir / "eval_predictions.csv"),
+            "strong_train_labels": str(output_dir / "strong_train_labels.csv"),
+            "knn_diagnostics": str(output_dir / "knn_diagnostics.csv"),
+            "train_subsets": str(output_dir / "train_subsets.csv"),
+            "map_dir": str(output_dir / "map"),
+        },
+        "elapsed_sec": time.time() - start,
+    }
+    return summary
