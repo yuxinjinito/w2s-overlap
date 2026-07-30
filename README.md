@@ -44,13 +44,17 @@ Research in progress.
 scripts/                          # flat by design: modules import each other as siblings
   representation_projection.py    # the rp score (self-testing: run the file)
   mlp_rp.py                       # mlpstep1 / linstep1 / step-2 swap variants (self-testing)
-  run_dream_paper_style_lora.py   # the full W2S pipeline: probe, scores, banding, LoRA, eval
+  run_dream_paper_style_lora.py   # the W2S driver: probe, scores, banding, LoRA, eval
+  contracts.py                    # shared row types and the per-arm seed-offset table
+  paper_style_datasets.py         # the sixteen testbeds: loading, formatting, splits
+  paper_style_report.py           # metrics and every file a run writes
   run_dream_paper_style_lora.sh   # env-driven single-run wrapper
   run_band_map_sweep.sh           # canonical multi-arm, multi-seed sweep
   run_anli_band_map.sh            # ANLI-pinned wrapper (fails loudly on other datasets)
   joint_screen.py                 # co-tuned basis x kernel x regularization screen
   lda_*.py, sae_*.py, cca_*.py,
   robust_linear.py, mlp_alignment.py   # alternative-selector family (all closed negatives)
+  compute_pgr.py, sae_basis.py    # shared metrics and the screens' small SAE
   diagnose_*.py, dump_bulk_acts.py     # diagnostics and activation dumps
   README.md                       # index of every script, by role
 docs/                             # method and commands

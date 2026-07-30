@@ -105,9 +105,12 @@ the opposite way and takes cross-fitting without complaint.
 An in-sample fit with no capacity cap degenerates. For the kernel this is analytic: as
 `reg` goes to zero, `P_s` approaches the identity and the score collapses onto step 1's
 residual, so the strong side stops filtering. For a learned map the failure is
-memorization of the target, which we have observed in the alignment setting. Whether a
-capped in-sample network is a useful step-2 estimator is currently being tested and is
-not settled.
+memorization of the target, which we have observed in the alignment setting. A capped
+in-sample network was then tested as the step-2 estimator at two points of the cap:
+lightly capped it lands below the random control, and at the cap the screen preferred
+it tracks the kernel's ranking and lands between random and rp downstream. The closer
+the capped network is pushed toward the kernel, the better it does, and it does not
+pass it, so the kernel stays the step-2 tool.
 
 Direction is checked, not assumed. rp and its step-1 variants keep the same useful end
 on every bed measured so far. The auxiliary signals do not: both forms of the
