@@ -1667,6 +1667,96 @@ def compute_selection_scores(
     )
 
 
+
+
+def prepare_multichoice_eval(*, args, device, output_dir, weak_probe) -> tuple[list | None, float | None]:
+    """Build the multiple-choice eval set and score the weak probe on it.
+
+    Returns (eval3_examples, weak_eval3_acc). The weak accuracy here is the lower
+    bound of the bounds table: the same argmax-over-candidates metric the strong
+    side is scored with, so the two are directly comparable. Both are None when
+    --eval-3class is off.
+    """
+    eval3_examples = None
+    if args.eval_3class:
+        if args.dataset == "dream":
+            multichoice_rows = load_dream_3class_eval(args.n_eval_questions, args.seed)
+        elif args.dataset == "sciq":
+            multichoice_rows = load_sciq_multichoice_eval(
+                args.n_eval_questions, args.seed + 2, args.sciq_use_support
+            )
+        elif args.dataset == "anli":
+            multichoice_rows = load_anli_multichoice_eval(
+                args.n_eval_questions, args.seed + 2, args.anli_round
+            )
+        elif args.dataset == "hellaswag":
+            multichoice_rows = load_hellaswag_multichoice_eval(args.n_eval_questions, args.seed + 2)
+        elif args.dataset == "reclor":
+            multichoice_rows = load_reclor_multichoice_eval(args.n_eval_questions, args.seed + 2)
+        elif args.dataset == "logiqa2":
+            multichoice_rows = load_logiqa2_multichoice_eval(args.n_eval_questions, args.seed + 2)
+        elif args.dataset == "wanli":
+            multichoice_rows = load_wanli_multichoice_eval(args.n_eval_questions, args.seed + 2)
+        elif args.dataset == "control":
+            multichoice_rows = load_control_multichoice_eval(args.n_eval_questions, args.seed + 2)
+        elif args.dataset == "fevernli":
+            multichoice_rows = load_fevernli_multichoice_eval(args.n_eval_questions, args.seed + 2)
+        elif args.dataset == "conjnli":
+            multichoice_rows = load_conjnli_multichoice_eval(args.n_eval_questions, args.seed + 2)
+        elif args.dataset == "imppres":
+            multichoice_rows = load_imppres_multichoice_eval(args.n_eval_questions, args.seed + 2)
+        elif args.dataset == "aquarat":
+            multichoice_rows = load_aquarat_multichoice_eval(args.n_eval_questions, args.seed + 2)
+        elif args.dataset == "quail":
+            multichoice_rows = _generic_mc_eval(_quail_rows("validation", args.seed + 2), "quail", args.n_eval_questions, args.seed + 2)
+        elif args.dataset == "riddlesense":
+            multichoice_rows = _generic_mc_eval(_riddlesense_rows("validation", args.seed + 2), "riddlesense", args.n_eval_questions, args.seed + 2)
+        elif args.dataset == "scinli":
+            multichoice_rows = _generic_mc_eval(_scinli_rows("test", args.seed + 2), "scinli", args.n_eval_questions, args.seed + 2)
+        else:
+            multichoice_rows = []
+        if multichoice_rows:
+            eval3_examples = [
+                LoraExample(
+                    id=r["id"],
+                    source_id=r["source_id"],
+                    text=r["txt"],
+                    label=int(r["labels"]),
+                    answer_suffix=args.answer_suffix,
+                )
+                for r in multichoice_rows
+            ]
+            n_questions = len({r["source_id"] for r in multichoice_rows})
+            print(
+                f"[multichoice] built {len(eval3_examples)} candidate rows over "
+                f"{n_questions} {args.dataset} questions"
+            )
+    # Weak-model multiple-choice accuracy = the LOWER BOUND for the bounds table /
+    # multichoice PGR. Score the candidate set with the (already-fitted) weak probe and
+    # argmax over each question's candidates, same as the strong-side multichoice metric.
+    weak_eval3_acc = None
+    if eval3_examples:
+        weak_eval3_acts = extract_final_token_activations(
+            args.weak_model,
+            [ex.text for ex in eval3_examples],
+            device,
+            args.torch_dtype,
+            args.activation_batch_size,
+            args.activation_max_length,
+            "extract weak eval3 activations",
+        )
+        weak_eval3_rows = [
+            {"prob_label1": float(p)} for p in predict_probe(weak_probe, weak_eval3_acts, device)
+        ]
+        weak_eval3_acc = accuracy_3class(eval3_examples, weak_eval3_rows)
+        write_eval3_rows(output_dir / "eval3_weak.csv", eval3_examples, weak_eval3_rows)
+        del weak_eval3_acts
+        clear_memory()
+        print(f"[multichoice] weak-probe lower bound accuracy_3class = {weak_eval3_acc:.3f}")
+
+    return eval3_examples, weak_eval3_acc
+
+
 def main() -> None:
     args = parse_args()
     runs = requested_runs(args)
@@ -1944,82 +2034,9 @@ def main() -> None:
 
     strong_examples = lora_examples["strong_train"]
     eval_examples = lora_examples["test"]
-    eval3_examples = None
-    if args.eval_3class:
-        if args.dataset == "dream":
-            multichoice_rows = load_dream_3class_eval(args.n_eval_questions, args.seed)
-        elif args.dataset == "sciq":
-            multichoice_rows = load_sciq_multichoice_eval(
-                args.n_eval_questions, args.seed + 2, args.sciq_use_support
-            )
-        elif args.dataset == "anli":
-            multichoice_rows = load_anli_multichoice_eval(
-                args.n_eval_questions, args.seed + 2, args.anli_round
-            )
-        elif args.dataset == "hellaswag":
-            multichoice_rows = load_hellaswag_multichoice_eval(args.n_eval_questions, args.seed + 2)
-        elif args.dataset == "reclor":
-            multichoice_rows = load_reclor_multichoice_eval(args.n_eval_questions, args.seed + 2)
-        elif args.dataset == "logiqa2":
-            multichoice_rows = load_logiqa2_multichoice_eval(args.n_eval_questions, args.seed + 2)
-        elif args.dataset == "wanli":
-            multichoice_rows = load_wanli_multichoice_eval(args.n_eval_questions, args.seed + 2)
-        elif args.dataset == "control":
-            multichoice_rows = load_control_multichoice_eval(args.n_eval_questions, args.seed + 2)
-        elif args.dataset == "fevernli":
-            multichoice_rows = load_fevernli_multichoice_eval(args.n_eval_questions, args.seed + 2)
-        elif args.dataset == "conjnli":
-            multichoice_rows = load_conjnli_multichoice_eval(args.n_eval_questions, args.seed + 2)
-        elif args.dataset == "imppres":
-            multichoice_rows = load_imppres_multichoice_eval(args.n_eval_questions, args.seed + 2)
-        elif args.dataset == "aquarat":
-            multichoice_rows = load_aquarat_multichoice_eval(args.n_eval_questions, args.seed + 2)
-        elif args.dataset == "quail":
-            multichoice_rows = _generic_mc_eval(_quail_rows("validation", args.seed + 2), "quail", args.n_eval_questions, args.seed + 2)
-        elif args.dataset == "riddlesense":
-            multichoice_rows = _generic_mc_eval(_riddlesense_rows("validation", args.seed + 2), "riddlesense", args.n_eval_questions, args.seed + 2)
-        elif args.dataset == "scinli":
-            multichoice_rows = _generic_mc_eval(_scinli_rows("test", args.seed + 2), "scinli", args.n_eval_questions, args.seed + 2)
-        else:
-            multichoice_rows = []
-        if multichoice_rows:
-            eval3_examples = [
-                LoraExample(
-                    id=r["id"],
-                    source_id=r["source_id"],
-                    text=r["txt"],
-                    label=int(r["labels"]),
-                    answer_suffix=args.answer_suffix,
-                )
-                for r in multichoice_rows
-            ]
-            n_questions = len({r["source_id"] for r in multichoice_rows})
-            print(
-                f"[multichoice] built {len(eval3_examples)} candidate rows over "
-                f"{n_questions} {args.dataset} questions"
-            )
-    # Weak-model multiple-choice accuracy = the LOWER BOUND for the bounds table /
-    # multichoice PGR. Score the candidate set with the (already-fitted) weak probe and
-    # argmax over each question's candidates, same as the strong-side multichoice metric.
-    weak_eval3_acc = None
-    if eval3_examples:
-        weak_eval3_acts = extract_final_token_activations(
-            args.weak_model,
-            [ex.text for ex in eval3_examples],
-            device,
-            args.torch_dtype,
-            args.activation_batch_size,
-            args.activation_max_length,
-            "extract weak eval3 activations",
-        )
-        weak_eval3_rows = [
-            {"prob_label1": float(p)} for p in predict_probe(weak_probe, weak_eval3_acts, device)
-        ]
-        weak_eval3_acc = accuracy_3class(eval3_examples, weak_eval3_rows)
-        write_eval3_rows(output_dir / "eval3_weak.csv", eval3_examples, weak_eval3_rows)
-        del weak_eval3_acts
-        clear_memory()
-        print(f"[multichoice] weak-probe lower bound accuracy_3class = {weak_eval3_acc:.3f}")
+    eval3_examples, weak_eval3_acc = prepare_multichoice_eval(
+        args=args, device=device, output_dir=output_dir, weak_probe=weak_probe
+    )
     weak_labels = weak_preds_strong.tolist()
     # weak_label_balanced = the FULL no-filter set balanced by the weak predicted label.
     # With weak_label (unbalanced full), random_balanced_f50 (balanced half) and
