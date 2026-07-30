@@ -19,25 +19,20 @@ avoiding the older verbose "Dialogue:/Candidate answer:" format.
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import math
 import random
 import time
-from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import torch
-from datasets import Dataset, load_dataset
 
 from run_dream_paper_linear_probe import (
     SplitBundle,
-    balance_binary_dataset,
     extract_final_token_activations,
     fit_probe,
     load_dream_3class_eval,
-    load_paper_dream_splits,
     predict_probe,
     resolve_device,
 )
@@ -63,40 +58,10 @@ from lda_alignment import lda_alignment_scores
 from excess_loss import excess_loss_kway_scores, option_entropy
 from paper_style_datasets import (
     LoraExample,
-    _aquarat_rows,
-    _conjnli_rows,
-    _format_mc_rows_paper_style,
     _generic_mc_eval,
-    _generic_mc_splits,
-    _imppres_rows,
-    _iter_logiqa2_mc,
-    _logiqa2_ctx,
-    _mc_candidate_row,
     _quail_rows,
-    _reclor_ctx,
     _riddlesense_rows,
     _scinli_rows,
-    format_anli_paper_style,
-    format_aquarat_paper_style,
-    format_conjnli_paper_style,
-    format_control_paper_style,
-    format_fevernli_paper_style,
-    format_hellaswag_paper_style,
-    format_imppres_paper_style,
-    format_paws_paper_style,
-    format_reclor_paper_style,
-    format_sciq_paper_style,
-    format_wanli_paper_style,
-    load_and_process_anli_split,
-    load_and_process_conjnli_split,
-    load_and_process_control_split,
-    load_and_process_fevernli_split,
-    load_and_process_hellaswag_split,
-    load_and_process_logiqa2_split,
-    load_and_process_paws_split,
-    load_and_process_reclor_split,
-    load_and_process_sciq_split,
-    load_and_process_wanli_split,
     load_anli_multichoice_eval,
     load_aquarat_multichoice_eval,
     load_conjnli_multichoice_eval,
@@ -105,22 +70,7 @@ from paper_style_datasets import (
     load_hellaswag_multichoice_eval,
     load_imppres_multichoice_eval,
     load_logiqa2_multichoice_eval,
-    load_paper_anli_splits,
-    load_paper_aquarat_splits,
-    load_paper_conjnli_splits,
-    load_paper_control_splits,
-    load_paper_fevernli_splits,
-    load_paper_hellaswag_splits,
-    load_paper_imppres_splits,
-    load_paper_logiqa2_splits,
-    load_paper_paws_splits,
-    load_paper_quail_splits,
-    load_paper_reclor_splits,
-    load_paper_riddlesense_splits,
-    load_paper_scinli_splits,
-    load_paper_sciq_splits,
     load_paper_style_splits,
-    load_paper_wanli_splits,
     load_reclor_multichoice_eval,
     load_sciq_multichoice_eval,
     load_wanli_multichoice_eval,
@@ -134,7 +84,6 @@ from paper_style_report import (
     auroc_from_rows,
     eval_rows_from_probs,
     format_summary,
-    metric_from_rows,
     prior_matched_accuracy,
     summarize_train_subset,
     write_eval3_rows,
@@ -143,8 +92,6 @@ from paper_style_report import (
     write_subset_csv,
     write_text_report,
 )
-
-
 
 
 def parse_args() -> argparse.Namespace:
@@ -457,154 +404,6 @@ def requested_runs(args: argparse.Namespace) -> list[str]:
     return runs
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# --- ReClor / LogiQA2: logical-reasoning multiple-choice candidate-correctness testbeds.
-# Same candidate-correctness reduction as ANLI/SciQ: sample a candidate option (50% gold,
-# 50% a wrong one), the model judges yes/no; mc_options keeps all options for the MC eval.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# --- WANLI: worker-and-AI adversarial NLI (3-way), same candidate-relation reduction as ANLI.
-
-
-
-
-
-
-
-
-
-
-# --- ConTRoL: contextual-reasoning adversarial NLI (3-way), same reduction as ANLI/WANLI.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def run_knn_saturation_diagnostics(
     args: argparse.Namespace,
     splits: SplitBundle,
@@ -754,18 +553,6 @@ def extract_all_activations(
         span_kind=span_kind,
     )
     return slice_activations(acts, sizes)
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def weak_label_balance(
@@ -997,14 +784,6 @@ def compute_weak_train_knn_stats(
     }
 
 
-
-
-
-
-
-
-
-
 def random_unbalanced_indices(n_examples: int, size: int, seed: int) -> np.ndarray:
     size = min(size, n_examples)
     rng = np.random.default_rng(seed)
@@ -1064,8 +843,6 @@ def run_lora_eval(
         "train_subset": summarize_train_subset(train_examples, train_labels),
         "eval": eval_summary,
     }, rows
-
-
 
 
 def _load_causal_lm_for_scoring(model_name: str, args: argparse.Namespace, device):
@@ -1171,8 +948,6 @@ def compute_el_kway_scores(
         "gold_opt": np.asarray(mc_correct, dtype=np.int64),
     }
     return el_arr, weak_entropy_arr, el_extras
-
-
 
 
 def build_keep_fraction_arms(
@@ -1503,8 +1278,6 @@ def build_keep_fraction_arms(
         )
 
 
-
-
 def compute_selection_scores(
     *,
     args,
@@ -1666,8 +1439,6 @@ def compute_selection_scores(
         },
         custom_scores,
     )
-
-
 
 
 def prepare_multichoice_eval(*, args, device, output_dir, weak_probe) -> tuple[list | None, float | None]:

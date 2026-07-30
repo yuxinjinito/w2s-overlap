@@ -432,6 +432,9 @@ def format_reclor_paper_style(ex: dict, row_id: int, rng: random.Random) -> dict
     return _mc_candidate_row("reclor", row_id, _reclor_ctx(ex), options, int(ex["label"]), rng)
 
 
+# --- ReClor / LogiQA2: logical-reasoning multiple-choice candidate-correctness testbeds.
+# Same candidate-correctness reduction as ANLI/SciQ: sample a candidate option (50% gold,
+# 50% a wrong one), the model judges yes/no; mc_options keeps all options for the MC eval.
 def load_and_process_reclor_split(split: str, n_docs: int, seed: int) -> Dataset:
     raw = load_dataset("metaeval/reclor", split=split).shuffle(seed=seed)
     rng = random.Random(seed)
@@ -554,6 +557,7 @@ def format_wanli_paper_style(ex: dict, row_id: int, rng: random.Random) -> dict:
     }
 
 
+# --- WANLI: worker-and-AI adversarial NLI (3-way), same candidate-relation reduction as ANLI.
 def load_and_process_wanli_split(split: str, n_docs: int, seed: int) -> Dataset:
     raw = load_dataset("alisawuffles/WANLI", split=split).shuffle(seed=seed)
     raw = raw.filter(lambda ex: ex["gold"] in WANLI_REL2IDX)
@@ -619,6 +623,7 @@ def format_control_paper_style(ex: dict, row_id: int, rng: random.Random) -> dic
     }
 
 
+# --- ConTRoL: contextual-reasoning adversarial NLI (3-way), same reduction as ANLI/WANLI.
 def load_and_process_control_split(split: str, n_docs: int, seed: int) -> Dataset:
     raw = load_dataset("tasksource/ConTRoL-nli", split=split).shuffle(seed=seed)
     raw = raw.filter(lambda ex: ex["label"] in CONTROL_REL2IDX)
