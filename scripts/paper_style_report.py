@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import csv
 import math
-import random
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -213,8 +212,6 @@ def accuracy_3class(examples: list[LoraExample], rows: list[dict]) -> float:
     (prob_label1), and count the question correct iff that candidate is the true answer
     (label == 1). This converts the binary 'is this candidate correct?' model into a true
     multiple-choice prediction (argmax over a question's candidates)."""
-    from collections import defaultdict
-
     groups: dict[str, list[tuple[float, int]]] = defaultdict(list)
     for ex, row in zip(examples, rows):
         groups[ex.source_id].append((float(row["prob_label1"]), int(ex.label)))
@@ -495,14 +492,14 @@ def write_text_report(path: Path, summary: dict) -> None:
             f"min={random_unbalanced['accuracy_min']:.3f}, "
             f"max={random_unbalanced['accuracy_max']:.3f}"
         )
-    random = summary.get("random_balanced_controls_summary")
-    if random:
+    random_bal = summary.get("random_balanced_controls_summary")
+    if random_bal:
         lines.append(
             "- random_balanced controls: "
-            f"mean={random['accuracy_mean']:.3f}, "
-            f"std={random['accuracy_std']:.3f}, "
-            f"min={random['accuracy_min']:.3f}, "
-            f"max={random['accuracy_max']:.3f}"
+            f"mean={random_bal['accuracy_mean']:.3f}, "
+            f"std={random_bal['accuracy_std']:.3f}, "
+            f"min={random_bal['accuracy_min']:.3f}, "
+            f"max={random_bal['accuracy_max']:.3f}"
         )
     lines.extend(
         [

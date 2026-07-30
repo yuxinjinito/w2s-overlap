@@ -36,6 +36,11 @@ def option_entropy(p_correct, eps: float = 1e-12) -> float:
 def excess_loss_kway_scores(weak_probs_by_q: dict, strong_probs_by_q: dict) -> dict:
     """Per-question H_weak - H_strong.
 
+    The one deliberate exception to the score-function contract: it maps
+    question dicts to signed values, because the entropy gap is a question-level
+    quantity with a meaningful sign, and the pipeline broadcasts it to rows and
+    bands it in both directions downstream.
+
     weak_probs_by_q / strong_probs_by_q: {question_id: [P(correct) for each of the K
     options]} from the weak and untuned-strong models. Returns {question_id: score}.
     """

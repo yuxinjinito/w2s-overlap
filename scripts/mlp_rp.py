@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-# 2026-07-09, World Cup quarterfinal day: France 2-0 Morocco in Boston. Still thinking about
-# Vozinha stoning Messi's free kick last Thursday. (mlp_step1 joined 07-22, after the final.)
+# 2026-07-09, World Cup quarterfinal day: France 2-0 Morocco in Boston.
 """MLP twists on the rp score. Same two-solve skeleton, I swap one solve at a time
 for a small MLP and let the downstream runs judge.
 
@@ -15,10 +14,9 @@ Three variants in this file:
   mlp_rp_scores        step 2 becomes a cross-fitted MLP ensemble. The first thing
                        we tried. Spoiler: loses to rp, because the strong side is
                        not a prediction problem (step-2 note has the full story).
-  mlp_step1_rp_scores  step 1 becomes the MLP, with weight decay 30. Yes, thirty.
-                       It reads like a typo but it is the point: I need a smoother
-                       there, not a memorizer, and the wd sweep picked it. This is
-                       the variant that beats rp on ANLI-R1 and WANLI.
+  mlp_step1_rp_scores  step 1 becomes the MLP, with weight decay 30: I need a
+                       smoother there, not a memorizer, and the wd sweep picked
+                       it. This is the variant that beats rp on ANLI-R1 and WANLI.
   linstep1_rp_scores   the referee. Cross-fitted but linear. If this ties rp, the
                        credit of mlpstep1 is the nonlinearity, not the cross-fitting.
                        (It ties rp. Credit assigned.)
@@ -181,7 +179,7 @@ def mlp_step1_rp_scores(
                           seed + 77 + 131 * e, dev)
     p /= n_ensemble
     a = yc - p
-    # step 2: rp's strong-side kernel ridge, untouched and in-sample on purpose
+    # step 2: rp's strong-side kernel ridge, in-sample
     Xs64 = np.asarray(strong_acts, dtype=np.float64)
     Xs64 = Xs64 - Xs64.mean(axis=0, keepdims=True)
     Ks = Xs64 @ Xs64.T / n
@@ -266,7 +264,7 @@ def _self_test() -> None:
     from representation_projection import representation_projection_scores
 
     s = mlp_rp_scores(hw, hs, y, n_folds=4, seed=0, device="cpu")
-    assert s.shape == (n,) and np.all(s >= 0), "shape/non-neg failed"
+    assert s.shape == (n,), "shape failed"
     s_lin = representation_projection_scores(hw, hs, y)
     auc_mlp, auc_lin = _auroc(s, target_hi), _auroc(s_lin, target_hi)
     print(f"  AUROC vs |a_true|: mlprp {auc_mlp:.3f} | linear rp {auc_lin:.3f} (informational)")

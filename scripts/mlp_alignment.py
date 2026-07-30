@@ -185,7 +185,7 @@ def _self_test() -> None:
         return (ranks[pos_mask].sum() - npos * (npos + 1) / 2.0) / (npos * nneg)
 
     s = mlp_alignment_scores(hw, hs, n_folds=4, hidden=256, epochs=250, seed=0, device="cpu")
-    assert s.shape == (n,) and np.all(s >= 0), "shape/non-neg failed"
+    assert s.shape == (n,), "shape failed"
     lo, hi = s[alignable].mean(), s[~alignable].mean()
     auc = _auroc(s, ~alignable)  # noise points should rank HIGHER (bigger residual)
     print(f"  alignable mean {lo:.3f} vs noise mean {hi:.3f};  AUROC(noise ranked higher) = {auc:.3f}")

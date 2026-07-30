@@ -2,8 +2,8 @@
 """Screen for the open-book (in-sample, capped) MLP step 2 -- the one legal cell the
 step-2 story left untested.
 
-Design: step 1 stays rp's own in-sample capped kernel solve (byte-identical), so this
-is a one-factor test of the step-2 estimator. Step 2 candidates fit a = (I - P_w) yc
+Design: step 1 stays rp's own in-sample capped kernel solve, byte-identical, and only
+the step-2 estimator varies. Step 2 candidates fit a = (I - P_w) yc
 from the strong reps ON THE SAME ROWS, with the cap swept: hidden width {256, 64} x
 weight decay {0.01, 3, 30}. Score = |prediction|.
 

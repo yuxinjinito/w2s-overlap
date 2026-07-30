@@ -870,7 +870,7 @@ def _load_causal_lm_for_scoring(model_name: str, torch_dtype: str, device):
 
 def compute_el_kway_scores(
     args: argparse.Namespace, strong_train_ds, device
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, dict]:
     """Excess-loss / learnability score per strong_train question (in row order):
     H_weak(options) - H_strong(options), where each model's option distribution is the
     softmax of its yes/no P(correct) over the K answer options. Loads the weak and the
@@ -904,7 +904,7 @@ def compute_el_kway_scores(
         for src, opts in zip(source_ids, mc_options)
         for k, otext in enumerate(opts)
     ]
-    el_batch = max(int(getattr(args, "strong_batch_size", 1)), 8)
+    el_batch = max(int(args.strong_batch_size), 8)
 
     def _option_probs_by_q(model, tokenizer, desc):
         _, rows = evaluate_yes_no(
@@ -978,7 +978,7 @@ def build_keep_fraction_arms(
 ) -> None:
     """Add the per-keep-fraction arms (the _f<pct> family) to run_subsets in place.
 
-    Lifted out of main() unchanged. The loop mutates run_subsets and curriculum_orders
+    The loop mutates run_subsets and curriculum_orders
     and returns nothing, which is why it extracts cleanly: no value escapes it.
     The seeds are offset by the enumerate index fi, so the iteration order over
     committee_keep_fracs is part of the contract; do not sort or parallelize it.
@@ -1298,7 +1298,7 @@ def compute_selection_scores(
 ) -> tuple[dict, dict]:
     """Compute every representation-side selection score the requested runs need.
 
-    Lifted out of main() unchanged. Each score is computed only when some run
+    Each score is computed only when some run
     asks for it, so an ordinary sweep pays for rp alone. Returns the scores by
     short name plus the externally supplied ones from --custom-scores-npz.
 
@@ -1407,7 +1407,7 @@ def compute_selection_scores(
     # Precomputed custom scores (offline-designed selectors, e.g. the joint screen's ticket
     # holders). The npz must carry weak_preds for the alignment guard.
     custom_scores = {}
-    if getattr(args, "custom_scores_npz", "") and any(r.startswith("cs") for r in runs):
+    if args.custom_scores_npz and any(r.startswith("cs") for r in runs):
         _cs = np.load(args.custom_scores_npz)
         _stored = np.asarray(_cs["weak_preds"]).astype(int)
         _own = np.asarray(weak_preds_strong).astype(int)
@@ -1674,7 +1674,7 @@ def build_run_plan(
     # no-filter, T->0 is hard top-selection). Smooth counterpart of the rp_high / el_high /
     # confidence_high bands. rp_scores + weak_confidences_strong are always available; el_scores
     # only when an el_* run is requested (el_weighted starts with "el_", so it triggers it).
-    wT = float(getattr(args, "weight_temperature", 1.0))
+    wT = float(args.weight_temperature)
     run_weights: dict[str, np.ndarray] = {
         "rp_weighted": scores_to_weights(rp_scores, wT),
         "conf_weighted": scores_to_weights(weak_confidences_strong, wT),
@@ -1964,7 +1964,7 @@ def write_run_outputs(
     # Optional: untuned-strong (base) yes/no P(correct) on each strong_train example, so analyze_rp
     # can test whether rp selects points the strong BASE can already (nearly) learn (overlap).
     base_train_probs = None
-    if getattr(args, "score_base_on_train", False):
+    if args.score_base_on_train:
         from run_dream_w2s_baselines import load_strong_model_and_tokenizer
         base_model, base_tok = load_strong_model_and_tokenizer(args, trainable_lora=False)
         _, base_rows = evaluate_yes_no(
@@ -2252,7 +2252,7 @@ def main() -> None:
         weak_correct_weak_train,
         args.knn_k,
     )
-    if getattr(args, "dump_acts", ""):
+    if args.dump_acts:
         np.savez_compressed(
             args.dump_acts,
             weak=np.asarray(rep_weak_acts["strong_train"], dtype=np.float32),
@@ -2290,7 +2290,7 @@ def main() -> None:
         )
     scores["el"] = el_scores
     scores["weak_entropy"] = weak_entropy_scores
-    if getattr(args, "dump_el", "") and el_scores is not None:
+    if args.dump_el:
         np.savez_compressed(
             args.dump_el,
             el=np.asarray(el_scores, dtype=np.float64),

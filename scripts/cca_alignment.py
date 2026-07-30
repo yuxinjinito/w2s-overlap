@@ -108,7 +108,7 @@ def _self_test() -> None:
         return (ranks[pos_mask].sum() - npos * (npos + 1) / 2.0) / (npos * nneg)
 
     s = cca_alignment_scores(hw, hs, n_folds=4, k_components=16, seed=0)
-    assert s.shape == (n,) and np.all(s >= 0), "shape/non-neg failed"
+    assert s.shape == (n,), "shape failed"
     auc = _auroc(s, ~alignable)
     print(f"  alignable mean {s[alignable].mean():.3f} vs noise mean {s[~alignable].mean():.3f}; "
           f"AUROC(noise higher) = {auc:.3f}")

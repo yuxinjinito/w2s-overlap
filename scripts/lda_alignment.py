@@ -8,10 +8,9 @@ of being collapsed to a norm:
 
     score_i = | < r_i , w_lda > |,   r_i = (h_s_i - mu_s) - (h_w_i - mu_w) W
 
-One factor away from l2resid (which is ||r_i||, all directions weighted equally): the only
-added ingredient is the weak-label axis. If this arm works where l2resid failed, the label
-component is the active ingredient (the disentangling experiment proposed at the 07/22
-meeting). Weak labels only; gold never enters.
+The added ingredient over l2resid (which is ||r_i||, all directions weighted equally)
+is the weak-label axis, the disentangling experiment proposed at the 07/22 meeting.
+Weak labels only; gold never enters.
 """
 from __future__ import annotations
 

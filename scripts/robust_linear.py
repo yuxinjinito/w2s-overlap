@@ -63,7 +63,14 @@ def _self_test() -> None:
     sigma = np.where(np.arange(n) < n // 2, 0.2, 1.5)[:, None]
     hs = hw @ Wm + sigma * rng.standard_normal((n, ds))
     s = robust_linear_residual_scores(hw, hs, n_folds=4, seed=0)
-    assert s.shape == (n,) and np.isfinite(s).all()
+    assert s.shape == (n,)
+    # degenerate control: the score is scale-normalized, so "near zero" is not a
+    # property it has. What IS analytic: under an exact linear map with exactly
+    # ten corrupted rows, those ten must be the ten largest scores.
+    hs_c = (hw @ Wm).copy()
+    hs_c[:10] += 25.0 * rng.standard_normal((10, ds))
+    s_c = robust_linear_residual_scores(hw, hs_c, n_folds=4, seed=0)
+    assert set(np.argsort(-s_c)[:10].tolist()) == set(range(10)), "corrupted rows must top the ranking"
     lo, hi = s[: n // 2].mean(), s[n // 2:].mean()
     print(f"  low-noise mean {lo:.3f} vs high-noise mean {hi:.3f}")
     assert lo < hi, "robust residuals should still rank noisy points higher"
