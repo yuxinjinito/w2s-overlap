@@ -21,13 +21,12 @@ import sys
 
 import numpy as np
 
+from compute_pgr import auroc
+
 sys.path.insert(0, "scripts")
 from lda_alignment import _fit_ridge_map, _lda_axis
 from mlp_alignment import mlp_alignment_scores
 
-
-def rankv(x):
-    r = np.empty(len(x)); r[np.argsort(x)] = np.arange(len(x)); return r
 
 
 def main():
@@ -47,8 +46,7 @@ def main():
     n = len(y)
 
     def sep_of(sc):
-        rr = rankv(sc) + 1; npos = wrong.sum()
-        au = float((rr[wrong].sum() - npos * (npos + 1) / 2) / (npos * (n - npos)))
+        au = auroc(sc, wrong.astype(int))
         return au, abs(au - 0.5)
 
     # rp reference for overlap

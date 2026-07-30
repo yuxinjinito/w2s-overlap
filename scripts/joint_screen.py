@@ -20,6 +20,8 @@ import argparse
 import json
 
 import numpy as np
+
+from compute_pgr import auroc
 import torch
 
 
@@ -93,9 +95,7 @@ def main():
     rp_rank = rankv(rp_ref)
 
     def metrics(score: np.ndarray):
-        rr = rankv(score) + 1
-        npos = wrong.sum()
-        au = float((rr[wrong].sum() - npos * (npos + 1) / 2) / (npos * (n - npos)))
+        au = auroc(score, wrong.astype(int))
         ov = len(set(np.argsort(-score)[: n // 2].tolist()) & top_rp) / (n // 2)
         return au, abs(au - 0.5), ov
 

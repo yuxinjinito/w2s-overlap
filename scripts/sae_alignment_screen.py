@@ -19,6 +19,8 @@ import argparse
 import json
 
 import numpy as np
+
+from compute_pgr import auroc as pgr_auroc
 import torch
 from torch import nn
 
@@ -127,21 +129,20 @@ def main():
     wrong = lab["weak_preds"].astype(int) != lab["gt"].astype(int)
     n = len(y)
 
-    def auroc(sc):
-        rr = rank(sc) + 1; npos = wrong.sum()
-        return float((rr[wrong].sum() - npos * (npos + 1) / 2) / (npos * (n - npos)))
+    def _au(sc):
+        return pgr_auroc(sc, wrong.astype(int))
 
     # raw references
     Xwc = Xw_l - Xw_l.mean(0, keepdims=True); Xsc = Xs_l - Xs_l.mean(0, keepdims=True)
     rp_raw = np.abs(smooth(Xsc @ Xsc.T / n, yc - smooth(Xwc @ Xwc.T / n, yc)))
-    report = {"raw_rp_auroc": auroc(rp_raw),
-              "raw_l2resid_auroc": auroc(oof_linear_residual(Xw_l, Xs_l)), "rows": []}
+    report = {"raw_rp_auroc": _au(rp_raw),
+              "raw_l2resid_auroc": _au(oof_linear_residual(Xw_l, Xs_l)), "rows": []}
     print(f"raw rp AUROC={report['raw_rp_auroc']:.3f}  raw l2resid AUROC={report['raw_l2resid_auroc']:.3f}")
 
     def add(name, s):
         sp = float(np.corrcoef(rank(s), rank(rp_raw))[0, 1])
         ov = len(set(np.argsort(-s)[:n//2]) & set(np.argsort(-rp_raw)[:n//2])) / (n // 2)
-        row = {"name": name, "auroc": auroc(s), "spearman_vs_rp": sp, "top50_overlap": ov}
+        row = {"name": name, "auroc": _au(s), "spearman_vs_rp": sp, "top50_overlap": ov}
         report["rows"].append(row)
         print(f"{name:34s} AUROC={row['auroc']:.3f} spearman={sp:.3f} overlap={ov:.3f}")
 

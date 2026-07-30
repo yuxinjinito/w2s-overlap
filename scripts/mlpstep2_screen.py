@@ -23,6 +23,8 @@ from __future__ import annotations
 import argparse
 
 import numpy as np
+
+from compute_pgr import auroc
 import torch
 from torch import nn
 
@@ -33,11 +35,9 @@ def _spearman(x, y):
 
 
 def _auroc(v, bad):
-    n = len(v)
-    order = v.argsort(kind="mergesort")
-    r = np.empty(n); r[order] = np.arange(1, n + 1)
-    n1, n0 = int(bad.sum()), int((~bad).sum())
-    return (r[bad].sum() - n1 * (n1 + 1) / 2) / (n1 * n0)
+    # the L1 original tie-averages; my first version here did not, and ties
+    # made the number depend on row order
+    return auroc(v, bad.astype(int))
 
 
 def _band_overlap(s1, s2, frac=0.5):
