@@ -9,7 +9,6 @@ nothing else in the pipeline.
 """
 from __future__ import annotations
 
-import argparse
 import csv
 import math
 import random
@@ -22,23 +21,23 @@ import numpy as np
 from contracts import LoraExample
 
 
-def format_summary(args: argparse.Namespace) -> dict[str, str]:
-    if args.dataset == "dream":
+def format_summary(dataset: str, sciq_use_support: bool, anli_round: str) -> dict[str, str]:
+    if dataset == "dream":
         return {
             "task": "paper-style binary candidate-answer correctness",
             "candidate_text": "dialogue + 'Q: {question} A: {candidate}'",
             "label": "1 if candidate is the original Dream answer, else 0",
             "takeaway": "This run uses LoRA with the paper-style Dream candidate-answer setup.",
         }
-    if args.dataset == "sciq":
+    if dataset == "sciq":
         candidate_text = (
             "support + 'Q: {question} A: {candidate}'"
-            if args.sciq_use_support
+            if sciq_use_support
             else "'Q: {question} A: {candidate}'"
         )
         takeaway = (
             "This run uses the SciQ support-passage ablation."
-            if args.sciq_use_support
+            if sciq_use_support
             else "This run uses the original datacentric_w2s SciQ no-support candidate-answer setup."
         )
         return {
@@ -47,99 +46,99 @@ def format_summary(args: argparse.Namespace) -> dict[str, str]:
             "label": "1 if candidate is the SciQ correct answer, else 0",
             "takeaway": takeaway,
         }
-    if args.dataset == "paws":
+    if dataset == "paws":
         return {
             "task": "paper-style binary semantic-equivalence classification",
             "candidate_text": "'Sent 1: {sentence1}\\nSent 2: {sentence2}\\n\\nQ: Are these sentences semantically equivalent?'",
             "label": "1 if the two sentences are semantically equivalent, else 0",
             "takeaway": "This run uses the original datacentric_w2s PAWS semantic-equivalence prompt.",
         }
-    if args.dataset == "anli":
+    if dataset == "anli":
         return {
             "task": "paper-style binary candidate-relation correctness (ANLI)",
             "candidate_text": "'Premise: ...\\nHypothesis: ...\\nQ: What is the relationship ...? A: {candidate}'",
             "label": "1 if the candidate relation (entailment/neutral/contradiction) is the gold ANLI label, else 0",
-            "takeaway": f"This run uses ANLI round {args.anli_round} as binary candidate-relation correctness (adversarial NLI -> weak model near chance).",
+            "takeaway": f"This run uses ANLI round {anli_round} as binary candidate-relation correctness (adversarial NLI -> weak model near chance).",
         }
-    if args.dataset == "hellaswag":
+    if dataset == "hellaswag":
         return {
             "task": "paper-style binary candidate-ending correctness (HellaSwag)",
             "candidate_text": "'{context} {ending}'",
             "label": "1 if the ending is the gold HellaSwag continuation, else 0",
             "takeaway": "This run uses HellaSwag (4-way commonsense ending) as binary candidate-ending correctness -> weak model near chance.",
         }
-    if args.dataset in ("reclor", "logiqa2"):
-        nice = "ReClor" if args.dataset == "reclor" else "LogiQA 2.0"
+    if dataset in ("reclor", "logiqa2"):
+        nice = "ReClor" if dataset == "reclor" else "LogiQA 2.0"
         return {
             "task": f"paper-style binary candidate-answer correctness ({nice})",
             "candidate_text": "'{context}\\nQ: {question} A: {candidate}'",
             "label": f"1 if the candidate option is the gold {nice} answer, else 0",
             "takeaway": f"This run uses {nice} (logical-reasoning MC) as binary candidate-answer correctness -> base near chance in the eval format.",
         }
-    if args.dataset == "wanli":
+    if dataset == "wanli":
         return {
             "task": "paper-style binary candidate-relation correctness (WANLI)",
             "candidate_text": "'Premise: ...\\nHypothesis: ...\\nQ: What is the relationship ...? A: {candidate}'",
             "label": "1 if the candidate relation (entailment/neutral/contradiction) is the gold WANLI label, else 0",
             "takeaway": "This run uses WANLI (worker-and-AI adversarial NLI) as binary candidate-relation correctness -> ANLI-like noisy-weak regime.",
         }
-    if args.dataset == "control":
+    if dataset == "control":
         return {
             "task": "paper-style binary candidate-relation correctness (ConTRoL)",
             "candidate_text": "'Premise: ...\\nHypothesis: ...\\nQ: What is the relationship ...? A: {candidate}'",
             "label": "1 if the candidate relation (entailment/neutral/contradiction) is the gold ConTRoL label, else 0",
             "takeaway": "This run uses ConTRoL (contextual-reasoning adversarial NLI) as binary candidate-relation correctness -> low-base testbed search.",
         }
-    if args.dataset == "fevernli":
+    if dataset == "fevernli":
         return {
             "task": "paper-style binary candidate-relation correctness (FEVER-NLI)",
             "candidate_text": "'Evidence: ...\\nClaim: ...\\nQ: Based on the evidence, the claim is? A: {candidate}'",
             "label": "1 if the candidate verdict (supported/not enough info/refuted) is the gold FEVER label, else 0",
             "takeaway": "This run uses FEVER recast as 3-way fact-verification NLI (candidate-verdict correctness) -> low-base testbed search.",
         }
-    if args.dataset == "conjnli":
+    if dataset == "conjnli":
         return {
             "task": "paper-style binary candidate-relation correctness (ConjNLI)",
             "candidate_text": "'Premise: ...\\nHypothesis: ...\\nQ: What is the relationship ...? A: {candidate}'",
             "label": "1 if the candidate relation is the ConjNLI label, else 0",
             "takeaway": "This run uses ConjNLI (adversarial conjunction NLI; silver 15k train pool, human dev as test) -> low-base testbed search.",
         }
-    if args.dataset == "imppres":
+    if dataset == "imppres":
         return {
             "task": "paper-style binary candidate-relation correctness (ImpPres)",
             "candidate_text": "'Premise: ...\\nHypothesis: ...\\nQ: What is the relationship ...? A: {candidate}'",
             "label": "1 if the candidate relation is the ImpPres gold label, else 0",
             "takeaway": "This run uses ImpPres presupposition NLI (templated, structurally adversarial) -> low-base testbed search; watch template memorization.",
         }
-    if args.dataset == "aquarat":
+    if dataset == "aquarat":
         return {
             "task": "paper-style binary candidate-answer correctness (AQuA-RAT)",
             "candidate_text": "'Q: {math word problem} A: {candidate option}'",
             "label": "1 if the candidate is the correct option, else 0",
             "takeaway": "This run uses AQuA-RAT (5-option math word problems; crowd-amplified pool) -> trio-PASS(CAUTION) validation; preregistered expectation is the ReClor outcome.",
         }
-    if args.dataset == "quail":
+    if dataset == "quail":
         return {
             "task": "paper-style binary candidate-answer correctness (QuAIL)",
             "candidate_text": "'{context}\\nQ: {question} A: {candidate}'",
             "label": "1 if the candidate is the correct option, else 0",
             "takeaway": "This run uses QuAIL (4-option multi-domain RC) under the relaxed base<0.70 bar (discrim .698) -> needs GT>=.8 headroom.",
         }
-    if args.dataset == "riddlesense":
+    if dataset == "riddlesense":
         return {
             "task": "paper-style binary candidate-answer correctness (RiddleSense)",
             "candidate_text": "'Q: {riddle} A: {candidate}'",
             "label": "1 if the candidate is the correct option, else 0",
             "takeaway": "This run uses RiddleSense (5-option human riddles) under the relaxed base<0.70 bar (discrim .657).",
         }
-    if args.dataset == "scinli":
+    if dataset == "scinli":
         return {
             "task": "paper-style binary candidate-relation correctness (SciNLI)",
             "candidate_text": "'Sentence 1: ...\\nSentence 2: ...\\nQ: What is the relationship ...? A: {candidate}'",
             "label": "1 if the candidate relation (entailment/contrasting/reasoning/neutral) is the SciNLI label, else 0",
             "takeaway": "This run uses SciNLI (4-way scientific-paper NLI, 107k, human-written) -> best trio profile of round 4 (probe .588, base .425).",
         }
-    raise ValueError(f"Unsupported dataset: {args.dataset}")
+    raise ValueError(f"Unsupported dataset: {dataset}")
 
 
 def eval_rows_from_probs(examples: list[LoraExample], probs: np.ndarray) -> list[dict]:
@@ -552,6 +551,10 @@ def build_summary(
     One flat record per run: the configuration that produced it, the weak-label
     diagnostics, the per-arm evaluation, and the kept-set diagnostics. Anything
     reported anywhere else has to be traceable back to a field here.
+
+    This is the one function that takes the argparse namespace wholesale: its
+    job is writing the run's configuration down, so its reads track parse_args
+    by design. Everything else in this module takes named fields.
     """
     summary = {
         "dataset": args.dataset,
