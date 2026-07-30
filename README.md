@@ -1,88 +1,61 @@
-# Weak-to-Strong Overlap Detection
+# Representation-Side Data Selection for Weak-to-Strong Generalization
 
-Research code for studying **weak-to-strong (W2S) generalization through a data-centric lens**.
-The project asks whether the "overlap" structure that governs W2S generalization can be
-detected from **weak/strong model representations and weak-model confidence**, and whether such a
-signal can be used to **select training data** that improves weak-to-strong fine-tuning.
+Research code for selecting weak-labeled training data in weak-to-strong (W2S)
+fine-tuning using only the weak and strong models' internal representations,
+with no gold labels at selection time.
 
-This is an independent extension of the setup in
-*Weak-to-Strong Generalization Through the Data-Centric Lens* (arXiv:2412.03881) and reuses the
-binary candidate-answer task formatting from the authors' reference implementation
-([`SprocketLab/datacentric_w2s`](https://github.com/SprocketLab/datacentric_w2s)).
+The core score, **rp**, turns the central quantity of
+*Representations Shape Weak-to-Strong Generalization* (ICML 2025,
+[arXiv:2502.00620](https://arxiv.org/abs/2502.00620)) into a per-example
+selection signal. That paper proves the weak-vs-ceiling prediction gap is
+governed by `P_s(I - P_w) y`, uses it to predict W2S performance, and never
+filters data with it; this repository does the filtering, with cross-fitted
+weak labels standing in for the gold labels the theorem assumes. A
+regularized-nonlinear variant (**mlpstep1**) replaces the weak-side solve with
+a heavily weight-decayed MLP and is the strongest selector we have measured.
 
-> **Status:** active research code. Results here are **preliminary and exploratory** — the
-> repository documents a sequence of diagnostic and ablation experiments, not a finished paper.
+The project extends the data-centric W2S line of
+*Weak-to-Strong Generalization Through the Data-Centric Lens*
+([arXiv:2412.03881](https://arxiv.org/abs/2412.03881)): rp is a continuous,
+per-example version of that paper's overlap detection.
 
-## Background
+## Method in four lines
 
-In weak-to-strong generalization, a weak teacher's (pseudo-)labels are used to fine-tune a stronger
-student. The data-centric view partitions training examples into *easy*, *overlap*, and *hard*
-regions, and argues that the **overlap** examples — where weak supervision is informative for the
-strong model — drive generalization. The seed paper detects overlap with a relatively simple
-discrete rule.
-
-This project investigates whether overlap can be detected **more smoothly and more directly from
-representation geometry**, and whether the resulting signal actually helps downstream W2S training:
-
-1. Are weak-model *correct* vs *incorrect* examples geometrically separable in an embedding space?
-2. How well can weak representations be **mapped** into strong representations, and do per-sample
-   mapping **residuals** mark easy / overlap / hard structure?
-3. Can a continuous overlap score (confidence + neighborhood geometry) **select data** that beats
-   no-filtering and the original discrete rule for W2S fine-tuning?
-
-See [`docs/method.md`](docs/method.md) for the full problem statement, hypotheses, and method
-details.
-
-## Methods implemented
-
-| Stage | What it does | Entry point(s) |
-|---|---|---|
-| **Inference + confidence** | Run weak/strong models, save per-example predictions and reference-style binary confidence `2·\|p−0.5\|` | `scripts/run_inference_confidence.py` |
-| **Probe confidence** | Extract weak final-token activations, fit a logistic probe, output probe-based confidence | `scripts/run_probe_confidence.py`, `scripts/run_reference_probe.py` |
-| **Representation mapping** | Fit weak→strong maps (linear regression, Procrustes, 1-layer ReLU); save the map and per-sample residual L2 | `scripts/run_representation_mapping.py`, `scripts/run_dream_aligned_residual_mapping.py` |
-| **W2S LoRA baselines** | Strong model: base, ground-truth-trained, weak-label-trained (LoRA) | `scripts/run_dream_w2s_baselines.py` |
-| **Paper-faithful probing** | Replicate the Figure A1 linear-probing setup (weak/strong/Full-W2S) | `scripts/run_dream_paper_linear_probe.py` |
-| **Overlap selection** | Residual-middle filtering, weak-confidence middle pruning, and kNN mixed-neighborhood selection on top of the LoRA pipeline | `scripts/run_dream_paper_style_lora.py`, `scripts/run_dream_paper_residual_filtering.py`, `scripts/run_dream_residual_filter_extras.py` |
-| **Feasibility / variants** | 8B LoRA smoke test; Dream 3-class variant | `scripts/run_strong_lora_smoke.py`, `scripts/run_dream_three_choice_smoke.py` |
-
-## Datasets and models
-
-- **Weak model:** `Qwen/Qwen1.5-0.5B` (a `Qwen/Qwen1.5-1.8B` strong proxy is used for cheap local tests).
-- **Strong model:** `meta-llama/Llama-3.1-8B` (LoRA fine-tuning).
-- **Primary task datasets:** Dream, SciQ, PAWS — formatted as **binary candidate-answer
-  correctness** (`question + candidate answer → is this candidate correct?`), following the seed
-  paper / reference repo.
-- **Confidence-skew survey** additionally covers SST-2, BoolQ, Amazon Polarity, Twitter-sentiment,
-  WiC, CoLA, ANLI-R2, and HellaSwag (see [`experiments/`](experiments/)).
-
-## Repository structure
+With column-centered representations, per side build the Gram kernel
+`K = X X^T / n` and the ridge smoother `P = K (K + reg * tr(K)/n * I)^{-1}`:
 
 ```
-.
-├── README.md
-├── requirements.txt
-├── docs/
-│   ├── method.md          # problem statement, hypotheses, method details
-│   ├── reproducing.md      # environment + exact commands per experiment
-│   └── results.md          # summary of preliminary findings
-├── scripts/                # all runnable code (flat; the run_*.py modules import each other)
-│   ├── run_inference_confidence.py / run_probe_confidence.py / run_reference_probe.py
-│   ├── run_representation_mapping.py / run_dream_aligned_residual_mapping.py
-│   ├── run_dream_w2s_baselines.py / run_dream_paper_linear_probe.py
-│   ├── run_dream_paper_style_lora.py / run_dream_paper_residual_filtering.py / run_dream_residual_filter_extras.py
-│   ├── run_dream_three_choice_smoke.py / run_strong_lora_smoke.py
-│   ├── run_*.sh            # experiment wrappers: dataset/config presets and sweeps
-│   └── analyze_*.py / plot_*.py / inspect_*.py / summarize_*.py / check_*.py / print_*.py
-├── experiments/            # dated analysis artifacts (e.g., answer-count vs confidence skew)
-├── figures/                # generated diagnostic figures
-└── results/                # experiment outputs (gitignored)
+step 1 (weak side):    a = (I - P_w) y_c        # label part the weak rep cannot explain
+step 2 (strong side):  v = P_s a                # part of that leftover the strong rep expresses
+score                  s_i = |v_i|              # keep the top half, train on it
 ```
 
-> **Note on layout.** The `scripts/run_*.py` files are standalone CLI entry points that also import
-> one another as sibling modules (e.g. `run_dream_paper_style_lora.py` reuses
-> `run_dream_w2s_baselines.py`). They are therefore kept in a single flat directory and invoked from
-> the repository root (`python3 scripts/<name>.py ...`). The `scripts/run_*.sh` wrappers encode the
-> exact dataset/config presets for each experiment.
+Step 1 uses hard, cross-fitted weak labels; step 2 is fitted in-sample with
+the ridge cap. Both choices are load-bearing: swapping either one degrades or
+destroys the score, and `scripts/mlp_rp.py` has the controlled swaps.
+
+## Headline result
+
+Research in progress. 
+
+## Repository layout
+
+```
+scripts/                          # flat by design: modules import each other as siblings
+  representation_projection.py    # the rp score (self-testing: run the file)
+  mlp_rp.py                       # mlpstep1 / linstep1 / step-2 swap variants (self-testing)
+  run_dream_paper_style_lora.py   # the full W2S pipeline: probe, scores, banding, LoRA, eval
+  run_dream_paper_style_lora.sh   # env-driven single-run wrapper
+  run_band_map_sweep.sh           # canonical multi-arm, multi-seed sweep
+  run_anli_band_map.sh            # ANLI-pinned wrapper (fails loudly on other datasets)
+  joint_screen.py                 # co-tuned basis x kernel x regularization screen
+  lda_*.py, sae_*.py, cca_*.py,
+  robust_linear.py, mlp_alignment.py   # alternative-selector family (all closed negatives)
+  diagnose_*.py, dump_bulk_acts.py     # diagnostics and activation dumps
+docs/                             # method notes and per-experiment commands
+experiments/, figures/            # dated analysis artifacts and generated figures
+results/                          # run outputs (gitignored)
+```
 
 ## Setup
 
@@ -91,45 +64,40 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-The experiments require a CUDA GPU (the 8B LoRA runs fit on a single 24 GB card, e.g. an RTX 4090).
-Access to the gated `meta-llama/Llama-3.1-8B` weights requires a Hugging Face token
-(`huggingface-cli login`).
+A single 24 GB CUDA GPU fits every experiment (7B LoRA, batch 4, fp16).
 
-## Reproducing experiments
+## Quick start
 
-All commands are run from the repository root and write under `results/` (gitignored). A minimal
-inference smoke test:
+Score a dataset with rp (pure NumPy):
 
-```bash
-python3 scripts/run_inference_confidence.py \
-  --mode causal_lm_yesno --dataset boolq --split validation --limit 128 \
-  --weak-model Qwen/Qwen1.5-0.5B --strong-model Qwen/Qwen1.5-1.8B \
-  --torch-dtype float16 \
-  --output results/inference_confidence/boolq_qwen_smoke.csv
+```python
+from representation_projection import representation_projection_scores
+scores = representation_projection_scores(weak_acts, strong_acts, weak_labels)
 ```
 
-The Dream W2S baselines and the residual / confidence / kNN selection comparisons are driven by the
-`scripts/run_dream_*.sh` wrappers (and `scripts/run_sciq_*.sh`, `scripts/run_paws_*.sh` for
-cross-dataset transfer). Full per-experiment commands, configs, and metrics are in
-[`docs/reproducing.md`](docs/reproducing.md).
+Both score modules are self-testing: `python scripts/representation_projection.py`
+and `python scripts/mlp_rp.py` run their built-in checks. A full W2S run with
+the standard arm set, three seeds:
 
-## Key findings (preliminary)
+```bash
+ANLI_ROUND=r1 TRAIN_SEEDS="42 123 456" bash scripts/run_anli_band_map.sh
+```
 
-- **Confidence skew** correlates with task type and the number of answer choices, but is not fully
-  explained by them: sentiment-style binary tasks are the most skewed, while PAWS (binary) and
-  Dream/SciQ (originally multiple-choice) have healthier weak-confidence distributions.
-- **Dream W2S baselines:** base strong ≈ 0.73, ground-truth-LoRA ≈ 0.86, weak-label-LoRA ≈ 0.55
-  (the weak-label run collapses toward a single class because Dream weak labels are noisy/skewed).
-- **Residual-middle filtering** plus weak-label balancing produced a first positive selection signal
-  under the LoRA setup, but did **not** hold under the cleaner paper-faithful linear-probe setup —
-  so it is reported as setup-specific rather than a stable rule.
-- **kNN mixed-neighborhood selection** (keeping points with mixed weak-correct / weak-wrong
-  neighbors in strong-embedding space) is currently the strongest Dream selection method; whether it
-  transfers to SciQ/PAWS is the active question.
+Arms, seeds, datasets, and evaluation are all env-driven; external score
+vectors can be injected with `--custom-scores-npz` (the pipeline verifies row
+alignment against its own weak labels before using them). Per-experiment
+commands live in `docs/reproducing.md`.
 
-Details and exact numbers: [`docs/results.md`](docs/results.md).
+## Reproducibility notes
 
-## References
+Every run writes a `summary.json` with the full configuration, per-arm accuracies, and kept-set diagnostics. Reported numbers are means over LoRA seeds at fixed data seed.
 
-- *Weak-to-Strong Generalization Through the Data-Centric Lens*, arXiv:2412.03881.
-- Reference implementation: [`SprocketLab/datacentric_w2s`](https://github.com/SprocketLab/datacentric_w2s).
+## Citing
+
+If you use this code, please cite the two papers it builds on, the theory
+([arXiv:2502.00620](https://arxiv.org/abs/2502.00620)) and the data-centric
+W2S framing ([arXiv:2412.03881](https://arxiv.org/abs/2412.03881),
+reference implementation
+`[SprocketLab/datacentric_w2s](https://github.com/SprocketLab/datacentric_w2s)`)
+alongside this repository. A paper describing the method here is in
+preparation; a citation entry will replace this line when it is available.

@@ -1,27 +1,31 @@
 #!/usr/bin/env python3
-"""Nonlinear (MLP) representation-projection score -- the label-CONDITIONED MLP redo.
+# 2026-07-09, World Cup quarterfinal day: France 2-0 Morocco in Boston. Still thinking about
+# Vozinha stoning Messi's free kick last Thursday. (mlp_step1 joined 07-22, after the final.)
+"""MLP twists on the rp score. Same two-solve skeleton, I swap one solve at a time
+for a small MLP and let the downstream runs judge.
 
-Keeps rp's math skeleton  P_s (I - P_w) y_hat ; step 1 (the weak-side smoother) stays the
-SAME kernel-ridge as rp, and only step 2 (the strong-side projection) becomes a cross-fitted
-MLP ensemble:
+The skeleton (the original lives in representation_projection.py):
 
-  step 1:  a = (I - P_w) yc            (kernel-ridge, identical to rp -- a low-variance
-                                        smooth estimate of the weak-unexplained residual)
-  step 2:  v_i = g_s^oof(h_s_i) -> a   (MLP ensemble: the part of that residual the STRONG
-                                        reps can express, now with a nonlinear function class)
+  step 1:  a = (I - P_w) yc       # what the weak rep cannot explain about its labels
+  step 2:  v = P_s a              # how much of that leftover the strong rep claims
   score_i = |v_i|
 
-Sharing step 1 with rp makes (rp vs mlprp) a one-factor ablation: only the strong-side
-function class changes. A full-MLP step 1 was tried and rejected: regressing binary labels
-with an MLP gives out-of-fold variance ~5x the true signal (it interpolates), destroying
-the residual; the kernel smoother is the right tool there.
+Three variants in this file:
 
-This is the correct "MLP redo" of rp: the label-free MLP alignment (mlp_alignment.py)
-carries no per-example signal (R1/ConTRoL negative), because representation ALIGNMENT is
-global under same-family LRT; rp's signal comes from conditioning on the weak labels.
-Here only the linear function class changes, so (rp vs mlprp) isolates what nonlinearity
-buys. Both stages are K-fold cross-fitted (out-of-fold predictions everywhere) -- an
-in-sample MLP would drive residuals to 0 and destroy the score.
+  mlp_rp_scores        step 2 becomes a cross-fitted MLP ensemble. The first thing
+                       we tried. Spoiler: loses to rp, because the strong side is
+                       not a prediction problem (step-2 note has the full story).
+  mlp_step1_rp_scores  step 1 becomes the MLP, with weight decay 30. Yes, thirty.
+                       It reads like a typo but it is the point: I need a smoother
+                       there, not a memorizer, and the wd sweep picked it. This is
+                       the variant that beats rp on ANLI-R1 and WANLI.
+  linstep1_rp_scores   the referee. Cross-fitted but linear. If this ties rp, the
+                       credit of mlpstep1 is the nonlinearity, not the cross-fitting.
+                       (It ties rp. Credit assigned.)
+
+House rule I keep relearning the hard way: whatever fits where it predicts needs a
+capacity cap, and the strong side must stay in-sample. Every variant here obeys it
+except mlp_rp_scores, which is exactly why mlp_rp_scores lost.
 """
 from __future__ import annotations
 
@@ -61,7 +65,8 @@ def _oof_regress(
     seed: int,
     dev: torch.device,
 ) -> np.ndarray:
-    """Out-of-fold MLP regression predictions of y from X (inputs z-scored per fold)."""
+    """Out-of-fold MLP regression: every row gets predicted by a model that never saw it.
+    Inputs are z-scored per fold (stats from the train folds only, no peeking)."""
     n = X.shape[0]
     rng = np.random.default_rng(seed)
     perm = rng.permutation(n)
@@ -111,8 +116,9 @@ def mlp_rp_scores(
     ridge_reg: float = 0.1,
     n_ensemble: int = 3,
 ) -> np.ndarray:
-    """Per-example hybrid rp score |g_s^oof(h_s)| where g_s (MLP ensemble) fits the
-    kernel-ridge weak residual a = (I - P_w) yc. Returns [n] non-negative scores."""
+    """rp with an MLP STEP 2: |g_s^oof(h_s)| where the ensemble g_s fits the weak
+    residual a out-of-fold. Kept for the record; the in-sample rule says this one
+    should lose, and it does. Returns [n] non-negative scores."""
     Xw = np.asarray(weak_acts, dtype=np.float32)
     Xs = np.asarray(strong_acts, dtype=np.float32)
     y = np.asarray(weak_labels, dtype=np.float64)
@@ -122,13 +128,13 @@ def mlp_rp_scores(
     dev = torch.device(device if device is not None else ("cuda" if torch.cuda.is_available() else "cpu"))
 
     yc = y - y.mean()
-    # step 1: kernel-ridge weak-side smoother, identical to representation_projection
+    # step 1: kernel-ridge weak-side smoother, byte-identical to rp's
     Xw64 = np.asarray(Xw, dtype=np.float64)
     Xw64 = Xw64 - Xw64.mean(axis=0, keepdims=True)
     Kw = Xw64 @ Xw64.T / n
     rw = ridge_reg * (np.trace(Kw) / n) + 1e-12
     a = yc - Kw @ np.linalg.solve(Kw + rw * np.eye(n), yc)
-    # step 2: cross-fitted MLP ensemble (variance-controlled) fit to the residual
+    # step 2: cross-fitted MLP ensemble on the residual (3 nets, single MLPs are moody)
     v = np.zeros(n, dtype=np.float64)
     for e in range(n_ensemble):
         v += _oof_regress(Xs, a, n_folds, hidden, epochs, lr, batch_size, weight_decay,
@@ -155,10 +161,11 @@ def mlp_step1_rp_scores(
     ridge_reg: float = 0.1,
     n_ensemble: int = 3,
 ) -> np.ndarray:
-    """Mirror of mlp_rp_scores with the sides swapped: the WEAK-side smoother is the MLP
-    ensemble (heavily weight-decayed; wd=30 is the peak-agreement setting of the 07/22
-    sweep) and the strong-side projection stays the deployed kernel ridge. Downstream test
-    of whether the regularized nonlinear step-1 behaves like rp. Returns [n] scores."""
+    """rp with an MLP STEP 1 (the good one). The weak-side smoother becomes a heavily
+    weight-decayed MLP ensemble, still cross-fitted; the strong-side projection stays
+    rp's in-sample kernel ridge. wd=30 comes from the 07/22 sweep, and in ridge language
+    it is just the lambda knob turned way up so the net smooths instead of memorizing.
+    Returns [n] scores."""
     Xw = np.asarray(weak_acts, dtype=np.float32)
     y = np.asarray(weak_labels, dtype=np.float64)
     n = Xw.shape[0]
@@ -167,14 +174,14 @@ def mlp_step1_rp_scores(
     dev = torch.device(device if device is not None else ("cuda" if torch.cuda.is_available() else "cpu"))
 
     yc = y - y.mean()
-    # step 1: cross-fitted MLP ensemble replacing the weak-side ridge smoother
+    # step 1: cross-fitted MLP ensemble instead of the weak-side ridge
     p = np.zeros(n, dtype=np.float64)
     for e in range(n_ensemble):
         p += _oof_regress(Xw, yc, n_folds, hidden, epochs, lr, batch_size, weight_decay,
                           seed + 77 + 131 * e, dev)
     p /= n_ensemble
     a = yc - p
-    # step 2: kernel-ridge strong-side projection, identical to representation_projection
+    # step 2: rp's strong-side kernel ridge, untouched and in-sample on purpose
     Xs64 = np.asarray(strong_acts, dtype=np.float64)
     Xs64 = Xs64 - Xs64.mean(axis=0, keepdims=True)
     Ks = Xs64 @ Xs64.T / n
@@ -194,10 +201,10 @@ def linstep1_rp_scores(
     seed: int = 0,
     ridge_reg: float = 0.1,
 ) -> np.ndarray:
-    """The pure cross-fit ablation for the mlpstep1 result: rp's step-1 estimator (trace-
-    normalized kernel ridge) fitted OUT-OF-FOLD, strong-side projection unchanged. Differs
-    from rp only in oof step 1; differs from mlpstep1 only in linearity. Closed-form, no
-    optimizer, no ensemble."""
+    """The referee: rp's own step-1 kernel ridge, just fitted out-of-fold like mlpstep1;
+    strong side unchanged. Differs from rp only in the cross-fitting, differs from
+    mlpstep1 only in linearity, so whoever it matches gets the blame or the credit.
+    Closed-form, no optimizer, runs in seconds."""
     Xw = np.asarray(weak_acts, dtype=np.float64)
     y = np.asarray(weak_labels, dtype=np.float64)
     n = len(y)
@@ -232,9 +239,9 @@ def _self_test() -> None:
     rng = np.random.default_rng(0)
     n, dw, ds = 900, 24, 32
 
-    # Latent factors: z visible to BOTH reps, q only to the STRONG rep. ONE label function
-    # y = sign(0.3 z + q): points where |q| dominates are unexplainable by the weak rep but
-    # fully expressible by the strong rep => they must receive HIGH scores.
+    # Toy world: factor z visible to BOTH reps, factor q only to the STRONG rep.
+    # Label y = sign(0.3 z + q). Points where q dominates are unexplainable by the
+    # weak rep but expressible by the strong one, so they should score HIGH.
     from scipy.special import erf as _erf
 
     z = rng.standard_normal(n)
@@ -244,8 +251,8 @@ def _self_test() -> None:
     hw = np.column_stack([z, rng.standard_normal((n, dw - 1))]).astype(np.float32)
     hs = np.column_stack([z, q, rng.standard_normal((n, ds - 2))]).astype(np.float32)
 
-    # ground truth: the best weak-side predictor is E[y|z] = P(q > -0.3 z) = Phi(0.3 z);
-    # the true weak-unexplainable residual is a_true = yc - (E[y|z] - mean).
+    # ground truth for the toy: best weak-side predictor is E[y|z] = Phi(0.3 z),
+    # so the true weak-unexplainable residual is computable exactly \o/
     e_y_z = 0.5 * (1.0 + _erf(0.3 * z / np.sqrt(2.0)))
     a_true = (y - y.mean()) - (e_y_z - e_y_z.mean())
     target_hi = np.abs(a_true) > np.median(np.abs(a_true))
@@ -263,14 +270,14 @@ def _self_test() -> None:
     s_lin = representation_projection_scores(hw, hs, y)
     auc_mlp, auc_lin = _auroc(s, target_hi), _auroc(s_lin, target_hi)
     print(f"  AUROC vs |a_true|: mlprp {auc_mlp:.3f} | linear rp {auc_lin:.3f} (informational)")
-    # sanity gates (whether the ranking HELPS training is an empirical question for real data):
+    # sanity gates only; whether a ranking helps TRAINING is for the real runs to say
     rk = lambda x: np.argsort(np.argsort(x)).astype(float)
     corr = float(np.corrcoef(rk(s), rk(s_lin))[0, 1])
     print(f"  spearman(mlprp, linear rp) = {corr:+.3f}  score std = {s.std():.4f}")
     assert s.std() > 1e-4, "degenerate (constant) scores"
     assert corr > 0.15, f"mlprp should broadly track the linear rp signal, got {corr:+.3f}"
 
-    # control: constant labels -> no residual signal anywhere
+    # control: constant labels -> nothing to explain -> nothing to score
     s0 = mlp_rp_scores(hw, hs, np.ones(n), n_folds=4, hidden=128, epochs=60, seed=1, device="cpu")
     print(f"  constant-y score mean (should be ~0): {s0.mean():.4f}")
     assert s0.mean() < 0.15, "constant labels should give near-zero scores"
