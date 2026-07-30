@@ -12,6 +12,7 @@ The directory is flat, and every file is an experiment entry point, invoked from
 | `run_band_map_sweep.sh`                                         | The canonical sweep: many arms, many seeds, one dataset.                                                                                           |
 | `run_anli_band_map.sh`                                          | ANLI-pinned wrapper; fails loudly if handed another dataset.                                                                                       |
 | `paper_style_datasets.py`                                       | The sixteen testbeds: loading, prompt formatting, splits, and the multiple-choice eval sets. A leaf layer, it calls nothing else in the pipeline. |
+| `paper_style_report.py`                                         | Metrics and every file a run writes: per-arm accuracy and AUROC, kept-set summaries, CSV dumps, and the text report beside summary.json.        |
 | `run_dream_w2s_baselines.py`, `run_dream_paper_linear_probe.py` | Imported by the pipeline for the baseline runs and the probe path.                                                                                 |
 
 
