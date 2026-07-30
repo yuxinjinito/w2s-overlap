@@ -23,29 +23,24 @@ import csv
 import gc
 import hashlib
 import json
-import random
 import time
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
-from datasets import Dataset, concatenate_datasets
+from datasets import Dataset
 
 # these began life here and moved to their layer homes; re-imported so the
 # older entry points that still say `from run_dream_paper_linear_probe import`
 # keep working
 from contracts import SplitBundle
 from paper_style_datasets import (
-    balance_binary_dataset,
     flatten_text,
-    format_dream_paper_style,
     iter_dream_question_rows,
-    load_and_process_dream_split,
     load_dream_raw,
     load_paper_dream_splits,
 )
-from huggingface_hub import hf_hub_download
 from tqdm import tqdm
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 

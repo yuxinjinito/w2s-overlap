@@ -21,20 +21,15 @@ import argparse
 import json
 
 import numpy as np
+
+from compute_pgr import spearman
 import torch
 
 from mlp_rp import _oof_regress
 
 
-def _rank(x: np.ndarray) -> np.ndarray:
-    r = np.empty(len(x))
-    r[np.argsort(x)] = np.arange(len(x))
-    return r
-
-
 def _spearman(a: np.ndarray, b: np.ndarray) -> float:
-    ra, rb = _rank(a), _rank(b)
-    return float(np.corrcoef(ra, rb)[0, 1])
+    return spearman(a, b)
 
 
 def _center_cols(X: np.ndarray) -> np.ndarray:

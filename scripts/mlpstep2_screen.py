@@ -24,14 +24,13 @@ import argparse
 
 import numpy as np
 
-from compute_pgr import auroc
+from compute_pgr import auroc, spearman
 import torch
 from torch import nn
 
 
 def _spearman(x, y):
-    rk = lambda v: np.argsort(np.argsort(v)).astype(float)
-    return float(np.corrcoef(rk(x), rk(y))[0, 1])
+    return spearman(x, y)
 
 
 def _auroc(v, bad):

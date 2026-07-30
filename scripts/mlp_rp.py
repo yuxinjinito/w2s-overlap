@@ -256,11 +256,9 @@ def _self_test() -> None:
     target_hi = np.abs(a_true) > np.median(np.abs(a_true))
 
     def _auroc(sc, pos_mask):
-        order = np.argsort(sc)
-        ranks = np.empty(n); ranks[order] = np.arange(1, n + 1)
-        npos = pos_mask.sum(); nneg = n - npos
-        return (ranks[pos_mask].sum() - npos * (npos + 1) / 2.0) / (npos * nneg)
+        return auroc(sc, pos_mask.astype(int))
 
+    from compute_pgr import auroc, spearman
     from representation_projection import representation_projection_scores
 
     s = mlp_rp_scores(hw, hs, y, n_folds=4, seed=0, device="cpu")
@@ -269,8 +267,7 @@ def _self_test() -> None:
     auc_mlp, auc_lin = _auroc(s, target_hi), _auroc(s_lin, target_hi)
     print(f"  AUROC vs |a_true|: mlprp {auc_mlp:.3f} | linear rp {auc_lin:.3f} (informational)")
     # sanity gates only; whether a ranking helps TRAINING is for the real runs to say
-    rk = lambda x: np.argsort(np.argsort(x)).astype(float)
-    corr = float(np.corrcoef(rk(s), rk(s_lin))[0, 1])
+    corr = spearman(s, s_lin)
     print(f"  spearman(mlprp, linear rp) = {corr:+.3f}  score std = {s.std():.4f}")
     assert s.std() > 1e-4, "degenerate (constant) scores"
     assert corr > 0.15, f"mlprp should broadly track the linear rp signal, got {corr:+.3f}"

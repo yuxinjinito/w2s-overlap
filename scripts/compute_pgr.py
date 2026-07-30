@@ -67,6 +67,25 @@ def auroc(scores, y):
     return float((ranks[y == 1].sum() - n_pos * (n_pos + 1) / 2.0) / (n_pos * n_neg))
 
 
+def spearman(x, y):
+    """Rank correlation with midranks, so ties do not depend on input order."""
+    def _midranks(v):
+        v = np.asarray(v, float)
+        order = np.argsort(v, kind="mergesort")
+        ranks_sorted = np.arange(1, len(v) + 1, dtype=float)
+        i = 0
+        while i < len(v):
+            j = i
+            while j + 1 < len(v) and v[order[j + 1]] == v[order[i]]:
+                j += 1
+            ranks_sorted[i : j + 1] = (i + 1 + j + 1) / 2.0
+            i = j + 1
+        ranks = np.empty(len(v))
+        ranks[order] = ranks_sorted
+        return ranks
+    return float(np.corrcoef(_midranks(x), _midranks(y))[0, 1])
+
+
 METRICS = {"accuracy": acc, "prior_matched": prior_matched, "auroc": auroc}
 
 
@@ -122,7 +141,24 @@ def main(run_dir):
             print(f"{m:30} {v:>8.3f} ± {vsd:5.3f} {pgr:>+11.3f} ± {psd:5.3f} {n:>3}")
 
 
-if __name__ == "__main__":
+def _self_test() -> None:
+    rng = np.random.default_rng(0)
+    s = rng.standard_normal(400)
+    y = (rng.random(400) < 0.4).astype(int)
+    # constant scores carry no ranking information: AUROC must be exactly 0.5
+    assert auroc(np.zeros(400), y) == 0.5
+    # a score equal to the label separates perfectly
+    assert auroc(y.astype(float), y) == 1.0
+    assert abs(spearman(s, s) - 1.0) < 1e-12
+    assert abs(spearman(s, -s) + 1.0) < 1e-12
+    # single-class labels have no negative (or positive) set to rank against
+    assert np.isnan(auroc(s, np.ones(400, int)))
+    print("PGR METRICS: SELF-TEST PASSED")
+
+
+if __name__ == "__main__" and len(sys.argv) == 2 and sys.argv[1] == "--self-test":
+    _self_test()
+elif __name__ == "__main__":
     if len(sys.argv) != 2:
         raise SystemExit("usage: compute_pgr.py <run_dir>")
     main(sys.argv[1])

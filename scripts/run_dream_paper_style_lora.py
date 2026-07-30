@@ -1612,7 +1612,7 @@ def build_run_plan(
         weak_preds_strong,
         args.seed + SEED_OFFSETS["knn_mixed"],
     )
-    knn_high_indices, knn_high_filter = score_band_indices(
+    knn_high_indices, _ = score_band_indices(
         knn_stats["knn_correct_rate"],
         args.knn_keep_middle_frac,
         "high",

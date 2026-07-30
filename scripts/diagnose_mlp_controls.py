@@ -25,15 +25,12 @@ import numpy as np
 import torch
 from torch import nn
 
+from compute_pgr import spearman
 from mlp_rp import _oof_regress, _zfit
 
 
-def _rank(x):
-    r = np.empty(len(x)); r[np.argsort(x)] = np.arange(len(x)); return r
-
-
 def _spearman(a, b):
-    return float(np.corrcoef(_rank(a), _rank(b))[0, 1])
+    return spearman(a, b)
 
 
 def _center(X):

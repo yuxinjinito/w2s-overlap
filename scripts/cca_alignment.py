@@ -90,6 +90,8 @@ def cca_alignment_scores(
 
 
 def _self_test() -> None:
+    from compute_pgr import auroc
+
     rng = np.random.default_rng(0)
     n, dw, ds = 600, 24, 32
 
@@ -102,10 +104,7 @@ def _self_test() -> None:
     hs = hw @ W + sigma * rng.standard_normal((n, ds))
 
     def _auroc(sc, pos_mask):
-        order = np.argsort(sc)
-        ranks = np.empty(n); ranks[order] = np.arange(1, n + 1)
-        npos = pos_mask.sum(); nneg = n - npos
-        return (ranks[pos_mask].sum() - npos * (npos + 1) / 2.0) / (npos * nneg)
+        return auroc(sc, pos_mask.astype(int))
 
     s = cca_alignment_scores(hw, hs, n_folds=4, k_components=16, seed=0)
     assert s.shape == (n,), "shape failed"
