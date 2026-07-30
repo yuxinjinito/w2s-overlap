@@ -53,8 +53,8 @@ scripts/                          # flat by design: modules import each other as
   robust_linear.py, mlp_alignment.py   # alternative-selector family (all closed negatives)
   diagnose_*.py, dump_bulk_acts.py     # diagnostics and activation dumps
   README.md                       # index of every script, by role
-docs/                             # method, commands, and current results
-experiments/                      # dated analysis artifacts
+docs/                             # method and commands
+dataset_survey/                   # one-off survey: answer counts vs weak-confidence skew
 results/                          # run outputs (gitignored)
 ```
 

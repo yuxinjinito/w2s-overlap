@@ -12,8 +12,8 @@ import html
 from pathlib import Path
 
 
-INPUT = Path("experiments/2026-05-28-dataset-answer-counts.csv")
-OUTPUT = Path("experiments/2026-05-28-answer-count-vs-confidence-skew.svg")
+INPUT = Path("dataset_survey/2026-05-28-dataset-answer-counts.csv")
+OUTPUT = Path("dataset_survey/2026-05-28-answer-count-vs-confidence-skew.svg")
 
 
 COLORS = {
