@@ -1502,6 +1502,171 @@ def build_keep_fraction_arms(
         )
 
 
+
+
+def compute_selection_scores(
+    *,
+    args,
+    runs: list[str],
+    rep_weak_acts: dict,
+    rep_strong_acts: dict,
+    weak_preds_strong,
+    weak_probs_strong,
+    device,
+) -> tuple[dict, dict]:
+    """Compute every representation-side selection score the requested runs need.
+
+    Lifted out of main() unchanged. Each score is computed only when some run
+    asks for it, so an ordinary sweep pays for rp alone. Returns the scores by
+    short name plus the externally supplied ones from --custom-scores-npz.
+
+    The activation dicts stay alive after this returns; main frees them right
+    after the call, before the excess-loss branch loads two models. Do not move
+    that free in here: it would only unbind the parameters and free nothing.
+    """
+    rp_scores = representation_projection_scores(
+        np.asarray(rep_weak_acts["strong_train"], dtype=np.float64),
+        np.asarray(rep_strong_acts["strong_train"], dtype=np.float64),
+        weak_preds_strong,
+        reg=args.rp_reg,
+        n_components=(args.rp_components or None),
+    )
+    # MLP alignment-residual score (the "MLP projection" alternative alignment): out-of-fold
+    # ||f(h_w) - h_s|| from a small cross-fitted MLP. Label-free; only computed when requested.
+    mlpalign_scores = None
+    if any(r.startswith("mlpalign_") for r in runs):
+        print("[mlpalign] fitting cross-fitted weak->strong MLP alignment (5 folds)...")
+        mlpalign_scores = mlp_alignment_scores(
+            np.asarray(rep_weak_acts["strong_train"], dtype=np.float32),
+            np.asarray(rep_strong_acts["strong_train"], dtype=np.float32),
+            n_folds=5, seed=args.seed, device=str(device),
+            epochs=args.mlpalign_epochs,
+            bottleneck=(args.mlpalign_bottleneck or None),
+            insample=args.mlpalign_insample,
+        )
+        print(f"[mlpalign] scores: mean {mlpalign_scores.mean():.3f} std {mlpalign_scores.std():.3f}")
+    # CCA alignment-disagreement score (cross-fitted regularized linear CCA); label-free.
+    cca_scores = None
+    if any(r.startswith("cca_") for r in runs):
+        print("[cca] fitting cross-fitted CCA alignment (5 folds)...")
+        cca_scores = cca_alignment_scores(
+            np.asarray(rep_weak_acts["strong_train"], dtype=np.float64),
+            np.asarray(rep_strong_acts["strong_train"], dtype=np.float64),
+            n_folds=5, seed=args.seed,
+        )
+        print(f"[cca] scores: mean {cca_scores.mean():.3f} std {cca_scores.std():.3f}")
+    # Robust variants (trim-refit): the whiteboard's outlier-discarding ridge + robust CCA.
+    cca_robust_scores = None
+    if any(r.startswith("ccarobust_") for r in runs):
+        print("[ccarobust] fitting robust (trim-refit) CCA...")
+        cca_robust_scores = cca_alignment_scores(
+            np.asarray(rep_weak_acts["strong_train"], dtype=np.float64),
+            np.asarray(rep_strong_acts["strong_train"], dtype=np.float64),
+            n_folds=5, seed=args.seed, trim_frac=0.1,
+        )
+        print(f"[ccarobust] mean {cca_robust_scores.mean():.3f} std {cca_robust_scores.std():.3f}")
+    l2robust_scores = None
+    if any(r.startswith("l2robust_") for r in runs):
+        print("[l2robust] fitting robust (trim-refit) ridge residuals...")
+        l2robust_scores = robust_linear_residual_scores(
+            np.asarray(rep_weak_acts["strong_train"], dtype=np.float64),
+            np.asarray(rep_strong_acts["strong_train"], dtype=np.float64),
+            n_folds=5, seed=args.seed, trim_frac=0.1,
+        )
+        print(f"[l2robust] mean {l2robust_scores.mean():.3f} std {l2robust_scores.std():.3f}")
+    # Hybrid nonlinear rp: kernel-ridge weak-side (same as rp) + MLP-ensemble strong-side.
+    # Label-conditioned; isolates what a nonlinear strong-side projection buys over rp.
+    mlprp_scores = None
+    if any(r.startswith("mlprp_") for r in runs):
+        print("[mlprp] fitting hybrid ridge+MLP rp (5 folds x 3 ensemble)...")
+        mlprp_scores = mlp_rp_scores(
+            np.asarray(rep_weak_acts["strong_train"], dtype=np.float32),
+            np.asarray(rep_strong_acts["strong_train"], dtype=np.float32),
+            weak_preds_strong,
+            n_folds=5, seed=args.seed, device=str(device), ridge_reg=args.rp_reg,
+        )
+        print(f"[mlprp] scores: mean {mlprp_scores.mean():.4f} std {mlprp_scores.std():.4f}")
+    # Swapped hybrid: heavily weight-decayed MLP weak-side + ridge strong-side (07/22
+    # follow-up; wd from --mlpstep1-wd, default the sweep's peak-agreement setting).
+    mlpstep1_scores = None
+    if any(r.startswith("mlpstep1_") for r in runs):
+        print(f"[mlpstep1] fitting MLP(wd={args.mlpstep1_wd})+ridge rp (5 folds x 3 ensemble)...")
+        mlpstep1_scores = mlp_step1_rp_scores(
+            np.asarray(rep_weak_acts["strong_train"], dtype=np.float32),
+            np.asarray(rep_strong_acts["strong_train"], dtype=np.float32),
+            weak_preds_strong,
+            n_folds=5, seed=args.seed, device=str(device), ridge_reg=args.rp_reg,
+            weight_decay=args.mlpstep1_wd,
+        )
+        print(f"[mlpstep1] scores: mean {mlpstep1_scores.mean():.4f} std {mlpstep1_scores.std():.4f}")
+    # Pure cross-fit ablation: rp's step-1 kernel ridge fitted out-of-fold, step 2 unchanged.
+    linstep1_scores = None
+    if any(r.startswith("linstep1_") for r in runs):
+        print("[linstep1] fitting oof kernel-ridge step-1 rp (5 folds, closed form)...")
+        linstep1_scores = linstep1_rp_scores(
+            np.asarray(rep_weak_acts["strong_train"], dtype=np.float64),
+            np.asarray(rep_strong_acts["strong_train"], dtype=np.float64),
+            weak_preds_strong,
+            n_folds=5, seed=args.seed, ridge_reg=args.rp_reg,
+        )
+        print(f"[linstep1] scores: mean {linstep1_scores.mean():.4f} std {linstep1_scores.std():.4f}")
+    # Soft-label rp: identical projection chain but yc built from the probe PROBABILITIES
+    # (07/24 offline screen: rank corr .64 vs hard, error separation .127 vs .108).
+    softrp_scores = None
+    if any(r.startswith("softrp_") for r in runs):
+        print("[softrp] rp on soft weak probabilities...")
+        softrp_scores = representation_projection_scores(
+            np.asarray(rep_weak_acts["strong_train"], dtype=np.float64),
+            np.asarray(rep_strong_acts["strong_train"], dtype=np.float64),
+            np.asarray(weak_probs_strong, dtype=np.float64),
+            reg=args.rp_reg, n_components=(args.rp_components or None),
+        )
+        print(f"[softrp] scores: mean {softrp_scores.mean():.4f} std {softrp_scores.std():.4f}")
+    # Precomputed custom scores (offline-designed selectors, e.g. the joint screen's ticket
+    # holders). The npz must carry weak_preds for the alignment guard.
+    custom_scores = {}
+    if getattr(args, "custom_scores_npz", "") and any(r.startswith("cs") for r in runs):
+        _cs = np.load(args.custom_scores_npz)
+        _stored = np.asarray(_cs["weak_preds"]).astype(int)
+        _own = np.asarray(weak_preds_strong).astype(int)
+        _rate = float((_stored == _own).mean()) if len(_stored) == len(_own) else 0.0
+        if _rate < 0.95:
+            raise ValueError(f"custom-scores npz misaligned with strong_train (weak_preds match {_rate:.3f})")
+        if _rate < 0.995:
+            print(f"[custom] WARNING: weak_preds match {_rate:.3f} -- cross-machine probe drift tolerated")
+        for _slot in ("cs1", "cs2", "cs3", "cs4"):
+            if _slot in _cs.files:
+                custom_scores[_slot] = np.asarray(_cs[_slot], dtype=np.float64)
+        print(f"[custom] loaded {sorted(custom_scores)} from {args.custom_scores_npz}")
+    # LDA-projected linear residual: label-aware twin of l2resid (07/22 meeting).
+    lda_scores = None
+    if any(r.startswith("lda_") for r in runs):
+        print("[lda] fitting LDA-projected ridge-map residuals (5 folds)...")
+        lda_scores = lda_alignment_scores(
+            np.asarray(rep_weak_acts["strong_train"], dtype=np.float64),
+            np.asarray(rep_strong_acts["strong_train"], dtype=np.float64),
+            weak_preds_strong,
+            n_folds=5, seed=args.seed,
+        )
+        print(f"[lda] scores: mean {lda_scores.mean():.4f} std {lda_scores.std():.4f}")
+
+    return (
+        {
+            "rp": rp_scores,
+            "cca": cca_scores,
+            "cca_robust": cca_robust_scores,
+            "l2robust": l2robust_scores,
+            "mlprp": mlprp_scores,
+            "mlpstep1": mlpstep1_scores,
+            "linstep1": linstep1_scores,
+            "mlpalign": mlpalign_scores,
+            "softrp": softrp_scores,
+            "lda": lda_scores,
+        },
+        custom_scores,
+    )
+
+
 def main() -> None:
     args = parse_args()
     runs = requested_runs(args)
@@ -1655,131 +1820,16 @@ def main() -> None:
         )
         print(f"[dump-acts] wrote {args.dump_acts}")
 
-    rp_scores = representation_projection_scores(
-        np.asarray(rep_weak_acts["strong_train"], dtype=np.float64),
-        np.asarray(rep_strong_acts["strong_train"], dtype=np.float64),
-        weak_preds_strong,
-        reg=args.rp_reg,
-        n_components=(args.rp_components or None),
+    scores, custom_scores = compute_selection_scores(
+        args=args,
+        runs=runs,
+        rep_weak_acts=rep_weak_acts,
+        rep_strong_acts=rep_strong_acts,
+        weak_preds_strong=weak_preds_strong,
+        weak_probs_strong=weak_probs_strong,
+        device=device,
     )
-    # MLP alignment-residual score (the "MLP projection" alternative alignment): out-of-fold
-    # ||f(h_w) - h_s|| from a small cross-fitted MLP. Label-free; only computed when requested.
-    mlpalign_scores = None
-    if any(r.startswith("mlpalign_") for r in runs):
-        print("[mlpalign] fitting cross-fitted weak->strong MLP alignment (5 folds)...")
-        mlpalign_scores = mlp_alignment_scores(
-            np.asarray(rep_weak_acts["strong_train"], dtype=np.float32),
-            np.asarray(rep_strong_acts["strong_train"], dtype=np.float32),
-            n_folds=5, seed=args.seed, device=str(device),
-            epochs=args.mlpalign_epochs,
-            bottleneck=(args.mlpalign_bottleneck or None),
-            insample=args.mlpalign_insample,
-        )
-        print(f"[mlpalign] scores: mean {mlpalign_scores.mean():.3f} std {mlpalign_scores.std():.3f}")
-    # CCA alignment-disagreement score (cross-fitted regularized linear CCA); label-free.
-    cca_scores = None
-    if any(r.startswith("cca_") for r in runs):
-        print("[cca] fitting cross-fitted CCA alignment (5 folds)...")
-        cca_scores = cca_alignment_scores(
-            np.asarray(rep_weak_acts["strong_train"], dtype=np.float64),
-            np.asarray(rep_strong_acts["strong_train"], dtype=np.float64),
-            n_folds=5, seed=args.seed,
-        )
-        print(f"[cca] scores: mean {cca_scores.mean():.3f} std {cca_scores.std():.3f}")
-    # Robust variants (trim-refit): the whiteboard's outlier-discarding ridge + robust CCA.
-    cca_robust_scores = None
-    if any(r.startswith("ccarobust_") for r in runs):
-        print("[ccarobust] fitting robust (trim-refit) CCA...")
-        cca_robust_scores = cca_alignment_scores(
-            np.asarray(rep_weak_acts["strong_train"], dtype=np.float64),
-            np.asarray(rep_strong_acts["strong_train"], dtype=np.float64),
-            n_folds=5, seed=args.seed, trim_frac=0.1,
-        )
-        print(f"[ccarobust] mean {cca_robust_scores.mean():.3f} std {cca_robust_scores.std():.3f}")
-    l2robust_scores = None
-    if any(r.startswith("l2robust_") for r in runs):
-        print("[l2robust] fitting robust (trim-refit) ridge residuals...")
-        l2robust_scores = robust_linear_residual_scores(
-            np.asarray(rep_weak_acts["strong_train"], dtype=np.float64),
-            np.asarray(rep_strong_acts["strong_train"], dtype=np.float64),
-            n_folds=5, seed=args.seed, trim_frac=0.1,
-        )
-        print(f"[l2robust] mean {l2robust_scores.mean():.3f} std {l2robust_scores.std():.3f}")
-    # Hybrid nonlinear rp: kernel-ridge weak-side (same as rp) + MLP-ensemble strong-side.
-    # Label-conditioned; isolates what a nonlinear strong-side projection buys over rp.
-    mlprp_scores = None
-    if any(r.startswith("mlprp_") for r in runs):
-        print("[mlprp] fitting hybrid ridge+MLP rp (5 folds x 3 ensemble)...")
-        mlprp_scores = mlp_rp_scores(
-            np.asarray(rep_weak_acts["strong_train"], dtype=np.float32),
-            np.asarray(rep_strong_acts["strong_train"], dtype=np.float32),
-            weak_preds_strong,
-            n_folds=5, seed=args.seed, device=str(device), ridge_reg=args.rp_reg,
-        )
-        print(f"[mlprp] scores: mean {mlprp_scores.mean():.4f} std {mlprp_scores.std():.4f}")
-    # Swapped hybrid: heavily weight-decayed MLP weak-side + ridge strong-side (07/22
-    # follow-up; wd from --mlpstep1-wd, default the sweep's peak-agreement setting).
-    mlpstep1_scores = None
-    if any(r.startswith("mlpstep1_") for r in runs):
-        print(f"[mlpstep1] fitting MLP(wd={args.mlpstep1_wd})+ridge rp (5 folds x 3 ensemble)...")
-        mlpstep1_scores = mlp_step1_rp_scores(
-            np.asarray(rep_weak_acts["strong_train"], dtype=np.float32),
-            np.asarray(rep_strong_acts["strong_train"], dtype=np.float32),
-            weak_preds_strong,
-            n_folds=5, seed=args.seed, device=str(device), ridge_reg=args.rp_reg,
-            weight_decay=args.mlpstep1_wd,
-        )
-        print(f"[mlpstep1] scores: mean {mlpstep1_scores.mean():.4f} std {mlpstep1_scores.std():.4f}")
-    # Pure cross-fit ablation: rp's step-1 kernel ridge fitted out-of-fold, step 2 unchanged.
-    linstep1_scores = None
-    if any(r.startswith("linstep1_") for r in runs):
-        print("[linstep1] fitting oof kernel-ridge step-1 rp (5 folds, closed form)...")
-        linstep1_scores = linstep1_rp_scores(
-            np.asarray(rep_weak_acts["strong_train"], dtype=np.float64),
-            np.asarray(rep_strong_acts["strong_train"], dtype=np.float64),
-            weak_preds_strong,
-            n_folds=5, seed=args.seed, ridge_reg=args.rp_reg,
-        )
-        print(f"[linstep1] scores: mean {linstep1_scores.mean():.4f} std {linstep1_scores.std():.4f}")
-    # Soft-label rp: identical projection chain but yc built from the probe PROBABILITIES
-    # (07/24 offline screen: rank corr .64 vs hard, error separation .127 vs .108).
-    softrp_scores = None
-    if any(r.startswith("softrp_") for r in runs):
-        print("[softrp] rp on soft weak probabilities...")
-        softrp_scores = representation_projection_scores(
-            np.asarray(rep_weak_acts["strong_train"], dtype=np.float64),
-            np.asarray(rep_strong_acts["strong_train"], dtype=np.float64),
-            np.asarray(weak_probs_strong, dtype=np.float64),
-            reg=args.rp_reg, n_components=(args.rp_components or None),
-        )
-        print(f"[softrp] scores: mean {softrp_scores.mean():.4f} std {softrp_scores.std():.4f}")
-    # Precomputed custom scores (offline-designed selectors, e.g. the joint screen's ticket
-    # holders). The npz must carry weak_preds for the alignment guard.
-    custom_scores = {}
-    if getattr(args, "custom_scores_npz", "") and any(r.startswith("cs") for r in runs):
-        _cs = np.load(args.custom_scores_npz)
-        _stored = np.asarray(_cs["weak_preds"]).astype(int)
-        _own = np.asarray(weak_preds_strong).astype(int)
-        _rate = float((_stored == _own).mean()) if len(_stored) == len(_own) else 0.0
-        if _rate < 0.95:
-            raise ValueError(f"custom-scores npz misaligned with strong_train (weak_preds match {_rate:.3f})")
-        if _rate < 0.995:
-            print(f"[custom] WARNING: weak_preds match {_rate:.3f} -- cross-machine probe drift tolerated")
-        for _slot in ("cs1", "cs2", "cs3", "cs4"):
-            if _slot in _cs.files:
-                custom_scores[_slot] = np.asarray(_cs[_slot], dtype=np.float64)
-        print(f"[custom] loaded {sorted(custom_scores)} from {args.custom_scores_npz}")
-    # LDA-projected linear residual: label-aware twin of l2resid (07/22 meeting).
-    lda_scores = None
-    if any(r.startswith("lda_") for r in runs):
-        print("[lda] fitting LDA-projected ridge-map residuals (5 folds)...")
-        lda_scores = lda_alignment_scores(
-            np.asarray(rep_weak_acts["strong_train"], dtype=np.float64),
-            np.asarray(rep_strong_acts["strong_train"], dtype=np.float64),
-            weak_preds_strong,
-            n_folds=5, seed=args.seed,
-        )
-        print(f"[lda] scores: mean {lda_scores.mean():.4f} std {lda_scores.std():.4f}")
+    rp_scores = scores["rp"]
     if not rep_is_default:
         del rep_weak_acts, rep_strong_acts
         clear_memory()
@@ -1795,6 +1845,8 @@ def main() -> None:
         el_scores, weak_entropy_scores, el_extras = compute_el_kway_scores(
             args, splits.strong_train, args.device
         )
+    scores["el"] = el_scores
+    scores["weak_entropy"] = weak_entropy_scores
     if getattr(args, "dump_el", "") and el_scores is not None:
         np.savez_compressed(
             args.dump_el,
@@ -2130,20 +2182,7 @@ def main() -> None:
         args=args,
         run_subsets=run_subsets,
         curriculum_orders=curriculum_orders,
-        scores={
-            "rp": rp_scores,
-            "el": el_scores,
-            "weak_entropy": weak_entropy_scores,
-            "cca": cca_scores,
-            "cca_robust": cca_robust_scores,
-            "l2robust": l2robust_scores,
-            "mlprp": mlprp_scores,
-            "mlpstep1": mlpstep1_scores,
-            "linstep1": linstep1_scores,
-            "mlpalign": mlpalign_scores,
-            "softrp": softrp_scores,
-            "lda": lda_scores,
-        },
+        scores=scores,
         custom_scores=custom_scores,
         committee_keep_fracs=committee_keep_fracs,
         committee_disagreement_strong=committee_disagreement_strong,
