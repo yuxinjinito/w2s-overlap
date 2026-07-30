@@ -801,6 +801,7 @@ def run_lora_eval(
     eval3_examples: list[LoraExample] | None = None,
     curriculum_order=None,
     sample_weights=None,
+    max_train_steps: int | None = None,
 ) -> tuple[dict, list[dict]]:
     if args.train_seed is not None:
         torch.manual_seed(args.train_seed)
@@ -808,6 +809,10 @@ def run_lora_eval(
         random.seed(args.train_seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(args.train_seed)
+    if max_train_steps is not None:
+        # train_lora_model reads the step cap off the namespace; give it a copy
+        # rather than mutating the shared one
+        args = argparse.Namespace(**{**vars(args), "max_train_steps": max_train_steps})
     model, tokenizer, report = train_lora_model(
         args, train_examples, train_labels, run_name, output_dir,
         curriculum_order=curriculum_order, sample_weights=sample_weights,
@@ -2268,10 +2273,10 @@ def main() -> None:
         device=device,
     )
     rp_scores = scores["rp"]
-    if not rep_is_default:
-        del rep_weak_acts, rep_strong_acts
-        clear_memory()
-    del strong_acts
+    # rep_* alias weak_acts/strong_acts in the default path, so free them
+    # unconditionally; deleting only strong_acts would leave the alias holding
+    # the whole array through every LoRA run
+    del rep_weak_acts, rep_strong_acts, strong_acts
     clear_memory()
     # excess-loss / learnability (K-way option entropy): H_weak(options) - H_strong(options),
     # each model's yes/no head over the K options (no probe). Expensive (loads the weak +
@@ -2364,24 +2369,24 @@ def main() -> None:
         clear_memory()
 
     eff_batch = max(1, args.strong_batch_size * args.gradient_accumulation_steps)
-    fixed_steps = args.max_train_steps
     for run_name in runs:
         if run_name == "base":
             continue
         train_examples, train_labels = run_subsets[run_name]
+        run_steps = None
         if args.epochs > 0:
             # Train this run for `epochs` full passes over its ACTUAL subset
             # (no-filter -> all data; f50 -> the real 50%), instead of the fixed
             # compute-matched cap. no-filter therefore gets proportionally more steps.
-            args.max_train_steps = args.epochs * max(1, math.ceil(len(train_examples) / eff_batch))
+            run_steps = args.epochs * max(1, math.ceil(len(train_examples) / eff_batch))
         report, rows = run_lora_eval(
             args, run_name, train_examples, train_labels, eval_examples, output_dir, eval3_examples,
             curriculum_order=curriculum_orders.get(run_name),
             sample_weights=run_weights.get(run_name),
+            max_train_steps=run_steps,
         )
         prediction_columns[run_name] = rows
         run_reports[run_name] = report
-    args.max_train_steps = fixed_steps
 
     write_run_outputs(
         args=args,
