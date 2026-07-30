@@ -78,7 +78,9 @@ def main():
     print(f"{len(texts)} rows from {args.n_examples} examples")
     weak = extract(args.weak_model, texts, args.device, args.batch_size * 4, args.max_length)
     strong = extract(args.strong_model, texts, args.device, args.batch_size, args.max_length)
-    np.savez_compressed(args.out, weak=weak, strong=strong, gold=gold)
+    # key is "gt" to match the pipeline's --dump-acts output, so the screens can
+    # read either file; this writer used to say "gold" and no reader ever did
+    np.savez_compressed(args.out, weak=weak, strong=strong, gt=gold)
     print(f"wrote {args.out}: weak {weak.shape} strong {strong.shape}")
 
 
