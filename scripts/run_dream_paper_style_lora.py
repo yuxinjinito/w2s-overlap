@@ -51,6 +51,7 @@ from run_dream_w2s_baselines import (
 )
 from representation_projection import representation_projection_scores
 from mlp_alignment import mlp_alignment_scores
+from contracts import SEED_OFFSETS
 from cca_alignment import cca_alignment_scores
 from mlp_rp import mlp_rp_scores, mlp_step1_rp_scores, linstep1_rp_scores
 from robust_linear import robust_linear_residual_scores
@@ -992,10 +993,10 @@ def build_keep_fraction_arms(
         pct = int(round(frac * 100))
         agree_idx, _ = score_band_indices(committee_disagreement_strong, frac, "low")
         disagree_idx, _ = score_band_indices(committee_disagreement_strong, frac, "high")
-        agree_bal = hard_weak_label_balance(agree_idx, weak_preds_strong, args.seed + 10000 + fi)
-        disagree_bal = hard_weak_label_balance(disagree_idx, weak_preds_strong, args.seed + 11000 + fi)
+        agree_bal = hard_weak_label_balance(agree_idx, weak_preds_strong, args.seed + SEED_OFFSETS["kf_committee_agree"] + fi)
+        disagree_bal = hard_weak_label_balance(disagree_idx, weak_preds_strong, args.seed + SEED_OFFSETS["kf_committee_disagree"] + fi)
         rand_bal = random_balanced_indices(
-            weak_preds_strong, int(round(frac * n_strong_examples)), args.seed + 12000 + fi
+            weak_preds_strong, int(round(frac * n_strong_examples)), args.seed + SEED_OFFSETS["kf_committee_top"] + fi
         )
         run_subsets[f"committee_agree_balanced_f{pct}"] = (
             [strong_examples[int(i)] for i in agree_bal],
@@ -1014,20 +1015,20 @@ def build_keep_fraction_arms(
             [weak_labels[int(i)] for i in rand_bal],
         )
         rand_unbal = random_unbalanced_indices(
-            n_strong_examples, int(round(frac * n_strong_examples)), args.seed + 12500 + fi
+            n_strong_examples, int(round(frac * n_strong_examples)), args.seed + SEED_OFFSETS["kf_random_matched"] + fi
         )
         run_subsets[f"random_unbalanced_f{pct}"] = (
             [strong_examples[int(i)] for i in rand_unbal],
             [weak_labels[int(i)] for i in rand_unbal],
         )
         knn_high_idx, _ = score_band_indices(knn_stats["knn_correct_rate"], frac, "high")
-        knn_high_bal = hard_weak_label_balance(knn_high_idx, weak_preds_strong, args.seed + 13000 + fi)
+        knn_high_bal = hard_weak_label_balance(knn_high_idx, weak_preds_strong, args.seed + SEED_OFFSETS["kf_knn_high"] + fi)
         run_subsets[f"knn_high_balanced_f{pct}"] = (
             [strong_examples[int(i)] for i in knn_high_bal],
             [weak_labels[int(i)] for i in knn_high_bal],
         )
         conf_high_idx, _ = score_band_indices(weak_confidences_strong, frac, "high")
-        conf_high_bal = hard_weak_label_balance(conf_high_idx, weak_preds_strong, args.seed + 14000 + fi)
+        conf_high_bal = hard_weak_label_balance(conf_high_idx, weak_preds_strong, args.seed + SEED_OFFSETS["kf_confidence_high"] + fi)
         run_subsets[f"confidence_high_balanced_f{pct}"] = (
             [strong_examples[int(i)] for i in conf_high_bal],
             [weak_labels[int(i)] for i in conf_high_bal],
@@ -1039,7 +1040,7 @@ def build_keep_fraction_arms(
         ch_hi = min(1.0, 1.0 - float(args.confidence_cleanhard_easy_drop))
         ch_lo = max(0.0, ch_hi - frac)
         cleanhard_idx = score_percentile_band_indices(weak_confidences_strong, ch_lo, ch_hi)
-        cleanhard_bal = hard_weak_label_balance(cleanhard_idx, weak_preds_strong, args.seed + 14700 + fi)
+        cleanhard_bal = hard_weak_label_balance(cleanhard_idx, weak_preds_strong, args.seed + SEED_OFFSETS["kf_confidence_cleanhard"] + fi)
         run_subsets[f"confidence_cleanhard_balanced_f{pct}"] = (
             [strong_examples[int(i)] for i in cleanhard_bal],
             [weak_labels[int(i)] for i in cleanhard_bal],
@@ -1054,19 +1055,19 @@ def build_keep_fraction_arms(
         ch_sub_conf = weak_confidences_strong[np.asarray(conf_high_bal, dtype=int)]
         curriculum_orders[f"curriculum_confhigh_f{pct}"] = list(np.argsort(-ch_sub_conf))
         conf_low_idx, _ = score_band_indices(weak_confidences_strong, frac, "low")
-        conf_low_bal = hard_weak_label_balance(conf_low_idx, weak_preds_strong, args.seed + 14500 + fi)
+        conf_low_bal = hard_weak_label_balance(conf_low_idx, weak_preds_strong, args.seed + SEED_OFFSETS["kf_confidence_low"] + fi)
         run_subsets[f"confidence_low_balanced_f{pct}"] = (
             [strong_examples[int(i)] for i in conf_low_bal],
             [weak_labels[int(i)] for i in conf_low_bal],
         )
         knn_low_idx, _ = score_band_indices(knn_stats["knn_correct_rate"], frac, "low")
-        knn_low_bal = hard_weak_label_balance(knn_low_idx, weak_preds_strong, args.seed + 13500 + fi)
+        knn_low_bal = hard_weak_label_balance(knn_low_idx, weak_preds_strong, args.seed + SEED_OFFSETS["kf_knn_low"] + fi)
         run_subsets[f"knn_low_balanced_f{pct}"] = (
             [strong_examples[int(i)] for i in knn_low_bal],
             [weak_labels[int(i)] for i in knn_low_bal],
         )
         rp_high_idx, _ = score_band_indices(rp_scores, frac, "high")
-        rp_high_bal = hard_weak_label_balance(rp_high_idx, weak_preds_strong, args.seed + 16000 + fi)
+        rp_high_bal = hard_weak_label_balance(rp_high_idx, weak_preds_strong, args.seed + SEED_OFFSETS["rp_high"] + fi)
         run_subsets[f"rp_high_balanced_f{pct}"] = (
             [strong_examples[int(i)] for i in rp_high_bal],
             [weak_labels[int(i)] for i in rp_high_bal],
@@ -1084,20 +1085,20 @@ def build_keep_fraction_arms(
         run_subsets[f"curriculum_rphigh_byrp_asc_f{pct}"] = run_subsets[f"rp_high_balanced_f{pct}"]
         curriculum_orders[f"curriculum_rphigh_byrp_asc_f{pct}"] = list(np.argsort(rp_scores[_rp_sub]))
         rp_low_idx, _ = score_band_indices(rp_scores, frac, "low")
-        rp_low_bal = hard_weak_label_balance(rp_low_idx, weak_preds_strong, args.seed + 16500 + fi)
+        rp_low_bal = hard_weak_label_balance(rp_low_idx, weak_preds_strong, args.seed + SEED_OFFSETS["rp_low"] + fi)
         run_subsets[f"rp_low_balanced_f{pct}"] = (
             [strong_examples[int(i)] for i in rp_low_bal],
             [weak_labels[int(i)] for i in rp_low_bal],
         )
         if cca_scores is not None:
             cc_high_idx, _ = score_band_indices(cca_scores, frac, "high")
-            cc_high_bal = hard_weak_label_balance(cc_high_idx, weak_preds_strong, args.seed + 22000 + fi)
+            cc_high_bal = hard_weak_label_balance(cc_high_idx, weak_preds_strong, args.seed + SEED_OFFSETS["cca_high"] + fi)
             run_subsets[f"cca_high_balanced_f{pct}"] = (
                 [strong_examples[int(i)] for i in cc_high_bal],
                 [weak_labels[int(i)] for i in cc_high_bal],
             )
             cc_low_idx, _ = score_band_indices(cca_scores, frac, "low")
-            cc_low_bal = hard_weak_label_balance(cc_low_idx, weak_preds_strong, args.seed + 22500 + fi)
+            cc_low_bal = hard_weak_label_balance(cc_low_idx, weak_preds_strong, args.seed + SEED_OFFSETS["cca_low"] + fi)
             run_subsets[f"cca_low_balanced_f{pct}"] = (
                 [strong_examples[int(i)] for i in cc_low_bal],
                 [weak_labels[int(i)] for i in cc_low_bal],
@@ -1106,119 +1107,119 @@ def build_keep_fraction_arms(
         # the linear counterpart of mlpalign -- what the LRT/stitching-style affine map misses.
         _lin_resid = np.asarray(residuals, dtype=np.float64).reshape(-1)
         lr_high_idx, _ = score_band_indices(_lin_resid, frac, "high")
-        lr_high_bal = hard_weak_label_balance(lr_high_idx, weak_preds_strong, args.seed + 23000 + fi)
+        lr_high_bal = hard_weak_label_balance(lr_high_idx, weak_preds_strong, args.seed + SEED_OFFSETS["l2resid_high"] + fi)
         run_subsets[f"l2resid_high_balanced_f{pct}"] = (
             [strong_examples[int(i)] for i in lr_high_bal],
             [weak_labels[int(i)] for i in lr_high_bal],
         )
         lr_low_idx, _ = score_band_indices(_lin_resid, frac, "low")
-        lr_low_bal = hard_weak_label_balance(lr_low_idx, weak_preds_strong, args.seed + 23500 + fi)
+        lr_low_bal = hard_weak_label_balance(lr_low_idx, weak_preds_strong, args.seed + SEED_OFFSETS["l2resid_low"] + fi)
         run_subsets[f"l2resid_low_balanced_f{pct}"] = (
             [strong_examples[int(i)] for i in lr_low_bal],
             [weak_labels[int(i)] for i in lr_low_bal],
         )
-        for _rname, _rscores, _roff in (("ccarobust", cca_robust_scores, 26000), ("l2robust", l2robust_scores, 27000)):
+        for _rname, _rscores in (("ccarobust", cca_robust_scores), ("l2robust", l2robust_scores)):
             if _rscores is None:
                 continue
             _hi_idx, _ = score_band_indices(_rscores, frac, "high")
-            _hi_bal = hard_weak_label_balance(_hi_idx, weak_preds_strong, args.seed + _roff + fi)
+            _hi_bal = hard_weak_label_balance(_hi_idx, weak_preds_strong, args.seed + SEED_OFFSETS[f"{_rname}_high"] + fi)
             run_subsets[f"{_rname}_high_balanced_f{pct}"] = (
                 [strong_examples[int(i)] for i in _hi_bal],
                 [weak_labels[int(i)] for i in _hi_bal],
             )
             _lo_idx, _ = score_band_indices(_rscores, frac, "low")
-            _lo_bal = hard_weak_label_balance(_lo_idx, weak_preds_strong, args.seed + _roff + 500 + fi)
+            _lo_bal = hard_weak_label_balance(_lo_idx, weak_preds_strong, args.seed + SEED_OFFSETS[f"{_rname}_low"] + fi)
             run_subsets[f"{_rname}_low_balanced_f{pct}"] = (
                 [strong_examples[int(i)] for i in _lo_bal],
                 [weak_labels[int(i)] for i in _lo_bal],
             )
         if mlprp_scores is not None:
             mr_high_idx, _ = score_band_indices(mlprp_scores, frac, "high")
-            mr_high_bal = hard_weak_label_balance(mr_high_idx, weak_preds_strong, args.seed + 25000 + fi)
+            mr_high_bal = hard_weak_label_balance(mr_high_idx, weak_preds_strong, args.seed + SEED_OFFSETS["mlprp_high"] + fi)
             run_subsets[f"mlprp_high_balanced_f{pct}"] = (
                 [strong_examples[int(i)] for i in mr_high_bal],
                 [weak_labels[int(i)] for i in mr_high_bal],
             )
             mr_low_idx, _ = score_band_indices(mlprp_scores, frac, "low")
-            mr_low_bal = hard_weak_label_balance(mr_low_idx, weak_preds_strong, args.seed + 25500 + fi)
+            mr_low_bal = hard_weak_label_balance(mr_low_idx, weak_preds_strong, args.seed + SEED_OFFSETS["mlprp_low"] + fi)
             run_subsets[f"mlprp_low_balanced_f{pct}"] = (
                 [strong_examples[int(i)] for i in mr_low_bal],
                 [weak_labels[int(i)] for i in mr_low_bal],
             )
         if lda_scores is not None:
             ld_high_idx, _ = score_band_indices(lda_scores, frac, "high")
-            ld_high_bal = hard_weak_label_balance(ld_high_idx, weak_preds_strong, args.seed + 28000 + fi)
+            ld_high_bal = hard_weak_label_balance(ld_high_idx, weak_preds_strong, args.seed + SEED_OFFSETS["lda_high"] + fi)
             run_subsets[f"lda_high_balanced_f{pct}"] = (
                 [strong_examples[int(i)] for i in ld_high_bal],
                 [weak_labels[int(i)] for i in ld_high_bal],
             )
             ld_low_idx, _ = score_band_indices(lda_scores, frac, "low")
-            ld_low_bal = hard_weak_label_balance(ld_low_idx, weak_preds_strong, args.seed + 28500 + fi)
+            ld_low_bal = hard_weak_label_balance(ld_low_idx, weak_preds_strong, args.seed + SEED_OFFSETS["lda_low"] + fi)
             run_subsets[f"lda_low_balanced_f{pct}"] = (
                 [strong_examples[int(i)] for i in ld_low_bal],
                 [weak_labels[int(i)] for i in ld_low_bal],
             )
         if softrp_scores is not None:
             sr_high_idx, _ = score_band_indices(softrp_scores, frac, "high")
-            sr_high_bal = hard_weak_label_balance(sr_high_idx, weak_preds_strong, args.seed + 30000 + fi)
+            sr_high_bal = hard_weak_label_balance(sr_high_idx, weak_preds_strong, args.seed + SEED_OFFSETS["softrp_high"] + fi)
             run_subsets[f"softrp_high_balanced_f{pct}"] = (
                 [strong_examples[int(i)] for i in sr_high_bal],
                 [weak_labels[int(i)] for i in sr_high_bal],
             )
             sr_low_idx, _ = score_band_indices(softrp_scores, frac, "low")
-            sr_low_bal = hard_weak_label_balance(sr_low_idx, weak_preds_strong, args.seed + 30500 + fi)
+            sr_low_bal = hard_weak_label_balance(sr_low_idx, weak_preds_strong, args.seed + SEED_OFFSETS["softrp_low"] + fi)
             run_subsets[f"softrp_low_balanced_f{pct}"] = (
                 [strong_examples[int(i)] for i in sr_low_bal],
                 [weak_labels[int(i)] for i in sr_low_bal],
             )
         for _ci, (_slot, _sc) in enumerate(sorted(custom_scores.items())):
             _hi, _ = score_band_indices(_sc, frac, "high")
-            _hb = hard_weak_label_balance(_hi, weak_preds_strong, args.seed + 31000 + 1000 * _ci + fi)
+            _hb = hard_weak_label_balance(_hi, weak_preds_strong, args.seed + SEED_OFFSETS["custom_high"] + 1000 * _ci + fi)
             run_subsets[f"{_slot}_high_balanced_f{pct}"] = (
                 [strong_examples[int(i)] for i in _hb],
                 [weak_labels[int(i)] for i in _hb],
             )
             _lo, _ = score_band_indices(_sc, frac, "low")
-            _lb = hard_weak_label_balance(_lo, weak_preds_strong, args.seed + 31500 + 1000 * _ci + fi)
+            _lb = hard_weak_label_balance(_lo, weak_preds_strong, args.seed + SEED_OFFSETS["custom_low"] + 1000 * _ci + fi)
             run_subsets[f"{_slot}_low_balanced_f{pct}"] = (
                 [strong_examples[int(i)] for i in _lb],
                 [weak_labels[int(i)] for i in _lb],
             )
         if linstep1_scores is not None:
             ls_high_idx, _ = score_band_indices(linstep1_scores, frac, "high")
-            ls_high_bal = hard_weak_label_balance(ls_high_idx, weak_preds_strong, args.seed + 29000 + fi)
+            ls_high_bal = hard_weak_label_balance(ls_high_idx, weak_preds_strong, args.seed + SEED_OFFSETS["linstep1_high"] + fi)
             run_subsets[f"linstep1_high_balanced_f{pct}"] = (
                 [strong_examples[int(i)] for i in ls_high_bal],
                 [weak_labels[int(i)] for i in ls_high_bal],
             )
             ls_low_idx, _ = score_band_indices(linstep1_scores, frac, "low")
-            ls_low_bal = hard_weak_label_balance(ls_low_idx, weak_preds_strong, args.seed + 29500 + fi)
+            ls_low_bal = hard_weak_label_balance(ls_low_idx, weak_preds_strong, args.seed + SEED_OFFSETS["linstep1_low"] + fi)
             run_subsets[f"linstep1_low_balanced_f{pct}"] = (
                 [strong_examples[int(i)] for i in ls_low_bal],
                 [weak_labels[int(i)] for i in ls_low_bal],
             )
         if mlpstep1_scores is not None:
             ms_high_idx, _ = score_band_indices(mlpstep1_scores, frac, "high")
-            ms_high_bal = hard_weak_label_balance(ms_high_idx, weak_preds_strong, args.seed + 27000 + fi)
+            ms_high_bal = hard_weak_label_balance(ms_high_idx, weak_preds_strong, args.seed + SEED_OFFSETS["mlpstep1_high"] + fi)
             run_subsets[f"mlpstep1_high_balanced_f{pct}"] = (
                 [strong_examples[int(i)] for i in ms_high_bal],
                 [weak_labels[int(i)] for i in ms_high_bal],
             )
             ms_low_idx, _ = score_band_indices(mlpstep1_scores, frac, "low")
-            ms_low_bal = hard_weak_label_balance(ms_low_idx, weak_preds_strong, args.seed + 27500 + fi)
+            ms_low_bal = hard_weak_label_balance(ms_low_idx, weak_preds_strong, args.seed + SEED_OFFSETS["mlpstep1_low"] + fi)
             run_subsets[f"mlpstep1_low_balanced_f{pct}"] = (
                 [strong_examples[int(i)] for i in ms_low_bal],
                 [weak_labels[int(i)] for i in ms_low_bal],
             )
         if mlpalign_scores is not None:
             ma_high_idx, _ = score_band_indices(mlpalign_scores, frac, "high")
-            ma_high_bal = hard_weak_label_balance(ma_high_idx, weak_preds_strong, args.seed + 21000 + fi)
+            ma_high_bal = hard_weak_label_balance(ma_high_idx, weak_preds_strong, args.seed + SEED_OFFSETS["mlpalign_high"] + fi)
             run_subsets[f"mlpalign_high_balanced_f{pct}"] = (
                 [strong_examples[int(i)] for i in ma_high_bal],
                 [weak_labels[int(i)] for i in ma_high_bal],
             )
             ma_low_idx, _ = score_band_indices(mlpalign_scores, frac, "low")
-            ma_low_bal = hard_weak_label_balance(ma_low_idx, weak_preds_strong, args.seed + 21500 + fi)
+            ma_low_bal = hard_weak_label_balance(ma_low_idx, weak_preds_strong, args.seed + SEED_OFFSETS["mlpalign_low"] + fi)
             run_subsets[f"mlpalign_low_balanced_f{pct}"] = (
                 [strong_examples[int(i)] for i in ma_low_bal],
                 [weak_labels[int(i)] for i in ma_low_bal],
@@ -1231,7 +1232,7 @@ def build_keep_fraction_arms(
         _conf_rank = np.argsort(np.argsort(weak_confidences_strong)).astype(np.float64)
         rp_conf_score = _rp_rank + _conf_rank
         rp_conf_high_idx, _ = score_band_indices(rp_conf_score, frac, "high")
-        rp_conf_high_bal = hard_weak_label_balance(rp_conf_high_idx, weak_preds_strong, args.seed + 24000 + fi)
+        rp_conf_high_bal = hard_weak_label_balance(rp_conf_high_idx, weak_preds_strong, args.seed + SEED_OFFSETS["rp_conf_high"] + fi)
         run_subsets[f"rp_conf_high_balanced_f{pct}"] = (
             [strong_examples[int(i)] for i in rp_conf_high_bal],
             [weak_labels[int(i)] for i in rp_conf_high_bal],
@@ -1239,13 +1240,13 @@ def build_keep_fraction_arms(
         # excess-loss / learnability (K-way option entropy): H_weak(options) - H_strong(options)
         if el_scores is not None:
             el_high_idx, _ = score_band_indices(el_scores, frac, "high")
-            el_high_bal = hard_weak_label_balance(el_high_idx, weak_preds_strong, args.seed + 17000 + fi)
+            el_high_bal = hard_weak_label_balance(el_high_idx, weak_preds_strong, args.seed + SEED_OFFSETS["el_high"] + fi)
             run_subsets[f"el_high_balanced_f{pct}"] = (
                 [strong_examples[int(i)] for i in el_high_bal],
                 [weak_labels[int(i)] for i in el_high_bal],
             )
             el_low_idx, _ = score_band_indices(el_scores, frac, "low")
-            el_low_bal = hard_weak_label_balance(el_low_idx, weak_preds_strong, args.seed + 17500 + fi)
+            el_low_bal = hard_weak_label_balance(el_low_idx, weak_preds_strong, args.seed + SEED_OFFSETS["el_low"] + fi)
             run_subsets[f"el_low_balanced_f{pct}"] = (
                 [strong_examples[int(i)] for i in el_low_bal],
                 [weak_labels[int(i)] for i in el_low_bal],
@@ -1257,13 +1258,13 @@ def build_keep_fraction_arms(
         if weak_entropy_scores is not None:
             weak_conf_entropy = -weak_entropy_scores
             ce_high_idx, _ = score_band_indices(weak_conf_entropy, frac, "high")
-            ce_high_bal = hard_weak_label_balance(ce_high_idx, weak_preds_strong, args.seed + 18000 + fi)
+            ce_high_bal = hard_weak_label_balance(ce_high_idx, weak_preds_strong, args.seed + SEED_OFFSETS["conf_entropy_high"] + fi)
             run_subsets[f"conf_entropy_high_balanced_f{pct}"] = (
                 [strong_examples[int(i)] for i in ce_high_bal],
                 [weak_labels[int(i)] for i in ce_high_bal],
             )
             ce_low_idx, _ = score_band_indices(weak_conf_entropy, frac, "low")
-            ce_low_bal = hard_weak_label_balance(ce_low_idx, weak_preds_strong, args.seed + 18500 + fi)
+            ce_low_bal = hard_weak_label_balance(ce_low_idx, weak_preds_strong, args.seed + SEED_OFFSETS["conf_entropy_low"] + fi)
             run_subsets[f"conf_entropy_low_balanced_f{pct}"] = (
                 [strong_examples[int(i)] for i in ce_low_bal],
                 [weak_labels[int(i)] for i in ce_low_bal],
@@ -1271,7 +1272,7 @@ def build_keep_fraction_arms(
         knn_mixed_idx, _ = score_closest_indices(
             knn_stats["knn_correct_rate"], frac, args.knn_mixed_center, "mixed"
         )
-        knn_mixed_bal = hard_weak_label_balance(knn_mixed_idx, weak_preds_strong, args.seed + 15000 + fi)
+        knn_mixed_bal = hard_weak_label_balance(knn_mixed_idx, weak_preds_strong, args.seed + SEED_OFFSETS["kf_knn_mixed"] + fi)
         run_subsets[f"knn_mixed_balanced_f{pct}"] = (
             [strong_examples[int(i)] for i in knn_mixed_bal],
             [weak_labels[int(i)] for i in knn_mixed_bal],
@@ -1607,7 +1608,7 @@ def main() -> None:
         args.l2_penalty,
         args.max_iter,
         device,
-        args.seed + 9000,
+        args.seed + SEED_OFFSETS["committee_fit"],
     )
 
     strong_train_labels = split_labels(splits.strong_train)
@@ -1739,7 +1740,7 @@ def main() -> None:
     confidence_middle_balanced_indices = hard_weak_label_balance(
         confidence_middle_indices,
         weak_preds_strong,
-        args.seed + 2000,
+        args.seed + SEED_OFFSETS["confidence_middle"],
     )
     confidence_high_indices, confidence_high_filter = score_band_indices(
         weak_confidences_strong,
@@ -1749,7 +1750,7 @@ def main() -> None:
     confidence_high_balanced_indices = hard_weak_label_balance(
         confidence_high_indices,
         weak_preds_strong,
-        args.seed + 3000,
+        args.seed + SEED_OFFSETS["confidence_high"],
     )
     knn_middle_indices, knn_middle_filter = score_band_indices(
         knn_stats["knn_correct_rate"],
@@ -1759,7 +1760,7 @@ def main() -> None:
     knn_middle_balanced_indices = hard_weak_label_balance(
         knn_middle_indices,
         weak_preds_strong,
-        args.seed + 4000,
+        args.seed + SEED_OFFSETS["knn_middle"],
     )
     knn_mixed_indices, knn_mixed_filter = score_closest_indices(
         knn_stats["knn_correct_rate"],
@@ -1770,7 +1771,7 @@ def main() -> None:
     knn_mixed_balanced_indices = hard_weak_label_balance(
         knn_mixed_indices,
         weak_preds_strong,
-        args.seed + 5000,
+        args.seed + SEED_OFFSETS["knn_mixed"],
     )
     knn_high_indices, knn_high_filter = score_band_indices(
         knn_stats["knn_correct_rate"],
@@ -1780,7 +1781,7 @@ def main() -> None:
     knn_high_balanced_indices = hard_weak_label_balance(
         knn_high_indices,
         weak_preds_strong,
-        args.seed + 5500,
+        args.seed + SEED_OFFSETS["knn_high"],
     )
     committee_agree_indices, committee_agree_filter = score_band_indices(
         committee_disagreement_strong,
@@ -1790,7 +1791,7 @@ def main() -> None:
     committee_agree_balanced_indices = hard_weak_label_balance(
         committee_agree_indices,
         weak_preds_strong,
-        args.seed + 7000,
+        args.seed + SEED_OFFSETS["committee_agree"],
     )
     committee_disagree_indices, committee_disagree_filter = score_band_indices(
         committee_disagreement_strong,
@@ -1800,7 +1801,7 @@ def main() -> None:
     committee_disagree_balanced_indices = hard_weak_label_balance(
         committee_disagree_indices,
         weak_preds_strong,
-        args.seed + 8000,
+        args.seed + SEED_OFFSETS["committee_disagree"],
     )
     random_control_size = args.random_control_size or len(middle_balanced_indices)
 
@@ -1815,7 +1816,7 @@ def main() -> None:
     # random_unbalanced_f50 (unbalanced half) it forms a balanced x fraction 2x2, so a
     # "random > no-filter" gap can be split into a balancing effect vs a data-fraction effect.
     weak_label_balanced_indices = hard_weak_label_balance(
-        np.arange(len(weak_preds_strong)), weak_preds_strong, args.seed + 500
+        np.arange(len(weak_preds_strong)), weak_preds_strong, args.seed + SEED_OFFSETS["weak_label_balanced"]
     )
     # Filter only correct weak points: the oracle / best-case label-noise
     # filter -- keep only the strong_train examples whose weak label already equals gold. On
@@ -1825,7 +1826,7 @@ def main() -> None:
     # are still the weak ones (which equal gold here by construction).
     weak_correct_indices = np.where(weak_preds_strong == strong_train_labels)[0]
     weak_correct_balanced_indices = hard_weak_label_balance(
-        weak_correct_indices, weak_preds_strong, args.seed + 600
+        weak_correct_indices, weak_preds_strong, args.seed + SEED_OFFSETS["weak_correct_balanced"]
     )
     # Curriculum: same full no-filter set as weak_label, trained in a fixed order by weak
     # confidence (easy = most-confident first, hard = least-confident first). Control is
@@ -1948,8 +1949,8 @@ def main() -> None:
         clear_memory()
         agree_idx = np.where(base_preds_strong == weak_preds_strong)[0]
         disagree_idx = np.where(base_preds_strong != weak_preds_strong)[0]
-        agree_bal = hard_weak_label_balance(agree_idx, weak_preds_strong, args.seed + 19000)
-        disagree_bal = hard_weak_label_balance(disagree_idx, weak_preds_strong, args.seed + 19500)
+        agree_bal = hard_weak_label_balance(agree_idx, weak_preds_strong, args.seed + SEED_OFFSETS["agree_full"])
+        disagree_bal = hard_weak_label_balance(disagree_idx, weak_preds_strong, args.seed + SEED_OFFSETS["disagree_full"])
         run_subsets["weak_strong_agree_balanced"] = (
             [strong_examples[int(i)] for i in agree_bal],
             [weak_labels[int(i)] for i in agree_bal],
@@ -1999,7 +2000,7 @@ def main() -> None:
             for i in range(K):
                 hi, lo = 1.0 - i / K, 1.0 - (i + 1) / K
                 q_idx = score_percentile_band_indices(scores, lo, hi)
-                q_bal = hard_weak_label_balance(q_idx, weak_preds_strong, args.seed + 20000 + 100 * sidx + i)
+                q_bal = hard_weak_label_balance(q_idx, weak_preds_strong, args.seed + SEED_OFFSETS["quantile"] + 100 * sidx + i)
                 run_subsets[f"{sig_name}_q{i}_balanced"] = (
                     [strong_examples[int(j)] for j in q_bal],
                     [weak_labels[int(j)] for j in q_bal],
@@ -2023,7 +2024,7 @@ def main() -> None:
             selected = random_unbalanced_indices(
                 len(strong_examples),
                 random_unbalanced_size,
-                args.seed + 6000 + idx,
+                args.seed + SEED_OFFSETS["random_unbalanced"] + idx,
             )
             run_subsets[run_name] = (
                 [strong_examples[int(i)] for i in selected],
@@ -2036,7 +2037,7 @@ def main() -> None:
         runs = [name for name in runs if name != "random_balanced"]
         for idx in range(args.random_control_count):
             run_name = f"random_balanced_{idx}"
-            selected = random_balanced_indices(weak_preds_strong, random_control_size, args.seed + 1000 + idx)
+            selected = random_balanced_indices(weak_preds_strong, random_control_size, args.seed + SEED_OFFSETS["random_balanced"] + idx)
             run_subsets[run_name] = (
                 [strong_examples[int(i)] for i in selected],
                 [weak_labels[int(i)] for i in selected],
