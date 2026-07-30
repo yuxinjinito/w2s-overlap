@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datasets import Dataset
 
 
-@dataclass(frozen=True)
+@dataclass
 class LoraExample:
     id: str
     source_id: str

@@ -19,7 +19,7 @@ from pathlib import Path
 
 import numpy as np
 
-from paper_style_datasets import LoraExample
+from contracts import LoraExample
 
 
 def format_summary(args: argparse.Namespace) -> dict[str, str]:

@@ -57,8 +57,8 @@ from mlp_rp import mlp_rp_scores, mlp_step1_rp_scores, linstep1_rp_scores
 from robust_linear import robust_linear_residual_scores
 from lda_alignment import lda_alignment_scores
 from excess_loss import excess_loss_kway_scores, option_entropy
+from contracts import LoraExample
 from paper_style_datasets import (
-    LoraExample,
     _generic_mc_eval,
     _quail_rows,
     _riddlesense_rows,

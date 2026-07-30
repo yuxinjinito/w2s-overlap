@@ -4,38 +4,164 @@
 Sixteen testbeds, each reduced to the same binary shape: one row per candidate
 answer, with the yes/no suffix appended at prompt time. Split out of
 run_dream_paper_style_lora.py so the pipeline file is about the method rather
-than about sixteen dataset schemas. The layer calls nothing else in the
-pipeline, so it stays a leaf: add a dataset here and nothing upstream changes
+than about sixteen dataset schemas. This module may import contracts and
+nothing else in the project: add a dataset here and nothing upstream changes
 except the dispatch in load_paper_style_splits.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import random
-from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 import numpy as np
-from datasets import Dataset, load_dataset
+from datasets import Dataset, concatenate_datasets, load_dataset
+from huggingface_hub import hf_hub_download
 
-from run_dream_paper_linear_probe import (
-    SplitBundle,
-    balance_binary_dataset,
-    load_paper_dream_splits,
-)
+from contracts import LoraExample, SplitBundle
 
 
-@dataclass
-class LoraExample:
-    id: str
-    source_id: str
-    text: str
-    label: int
-    answer_suffix: str
+# --- Dream: the original bed. These lived in the probe script from the first
+# phase; every other testbed already lived here, so Dream now does too.
+def flatten_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return " ".join(flatten_text(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return "\n".join(flatten_text(item) for item in value)
+    return str(value)
 
-    @property
-    def prompt(self) -> str:
-        return f"{self.text}{self.answer_suffix}"
+
+def load_dream_raw(split: str) -> list[Any]:
+    split_file = {
+        "train": "train.json",
+        "validation": "dev.json",
+        "dev": "dev.json",
+        "test": "test.json",
+    }.get(split, f"{split}.json")
+    data_path = hf_hub_download(
+        repo_id="onionmonster/dream",
+        filename=f"raw/{split_file}",
+        repo_type="dataset",
+    )
+    return json.loads(Path(data_path).read_text(encoding="utf-8"))
+
+
+def iter_dream_question_rows(raw_data: list[Any]):
+    """Yield rows shaped like the original HF Dream builder examples.
+
+    The current `datasets` package no longer reliably loads the old Dream script
+    on our machine, so we read the raw JSON and construct the same fields the
+    original repo's formatter expects: dialogue, question, answer, choice.
+    """
+
+    for row_index, ex in enumerate(raw_data):
+        if isinstance(ex, dict):
+            dialogue = ex.get("dialogue") or ex.get("article") or ex.get("context") or ex.get("text") or []
+            questions = ex.get("questions") or ex.get("question") or ex.get("qas") or []
+            source_id = ex.get("id", row_index)
+        elif isinstance(ex, (list, tuple)) and len(ex) >= 2:
+            dialogue = ex[0]
+            questions = ex[1]
+            source_id = ex[2] if len(ex) > 2 else row_index
+        else:
+            continue
+
+        if isinstance(questions, dict):
+            questions = [questions]
+        for question_index, qa in enumerate(questions):
+            if not isinstance(qa, dict):
+                continue
+            question = str(qa.get("question", ""))
+            answer = str(qa.get("answer", ""))
+            choices = qa.get("choice") or qa.get("choices") or []
+            if not question or not answer or not choices:
+                continue
+            yield {
+                "source_id": f"{source_id}-{question_index}",
+                "dialogue": dialogue,
+                "question": question,
+                "answer": answer,
+                "choice": [str(choice) for choice in choices],
+            }
+
+
+def format_dream_paper_style(ex: dict[str, Any], rng: random.Random) -> dict[str, Any]:
+    """Match `format_dream` in the original repo."""
+
+    hard_label = int(rng.random() < 0.5)
+    if hard_label:
+        ans = ex["answer"]
+    else:
+        distractors = list(ex["choice"])
+        distractors.remove(ex["answer"])
+        ans = rng.choice(distractors)
+
+    joined = "\n".join(ex["dialogue"]) if isinstance(ex["dialogue"], list) else flatten_text(ex["dialogue"])
+    txt = f"{joined}\n\nQ: {ex['question']} A: {ans}"
+    choices = list(ex["choice"])
+    return {
+        "id": hashlib.sha1(txt.encode()).hexdigest()[:8],
+        "source_id": ex["source_id"],
+        "txt": txt,
+        "labels": hard_label,
+        "gt_labels": hard_label,
+        "mc_options": [f"{joined}\n\nQ: {ex['question']} A: {c}" for c in choices],
+        "mc_correct": choices.index(ex["answer"]),
+    }
+
+
+def balance_binary_dataset(ds: Dataset, seed: int) -> Dataset:
+    labels = [int(label) for label in ds["labels"]]
+    counts = {0: labels.count(0), 1: labels.count(1)}
+    if not counts[0] or not counts[1]:
+        return ds
+
+    majority_label = 0 if counts[0] > counts[1] else 1
+    minority_label = 1 - majority_label
+    minority_count = counts[minority_label]
+    minority_ds = ds.filter(lambda ex: int(ex["labels"]) == minority_label)
+    majority_ds = (
+        ds.filter(lambda ex: int(ex["labels"]) == majority_label)
+        .shuffle(seed=seed)
+        .select(range(minority_count))
+    )
+    return concatenate_datasets([minority_ds, majority_ds]).shuffle(seed=seed)
+
+
+def load_and_process_dream_split(split: str, n_docs: int, seed: int) -> Dataset:
+    raw_rows = list(iter_dream_question_rows(load_dream_raw(split)))
+    raw_ds = Dataset.from_list(raw_rows).shuffle(seed=seed)
+    rng = random.Random(seed)
+    formatted_rows = [format_dream_paper_style(ex, rng) for ex in raw_ds]
+    ds = Dataset.from_list(formatted_rows)
+    ds = ds.filter(lambda ex: ex["txt"] != "")
+    ds = balance_binary_dataset(ds, seed)
+    if len(ds) < n_docs:
+        print(f"dream/{split} has < {n_docs} docs after balancing, using all {len(ds)}")
+        return ds
+    return ds.select(range(n_docs))
+
+
+def load_paper_dream_splits(n_train: int, n_val: int, n_test: int, seed: int) -> SplitBundle:
+    train_pool = load_and_process_dream_split("train", n_train + n_val, seed)
+    test = load_and_process_dream_split("test", n_test, seed)
+
+    val_count = min(n_val, len(train_pool))
+    val = train_pool.select(range(val_count))
+    train = train_pool.select(range(val_count, len(train_pool)))
+    train_halves = train.train_test_split(test_size=0.5, seed=seed)
+
+    return SplitBundle(
+        weak_train=train_halves["train"],
+        strong_train=train_halves["test"],
+        val=val,
+        test=test,
+    )
 
 
 def to_lora_examples(split, answer_suffix: str) -> list[LoraExample]:
