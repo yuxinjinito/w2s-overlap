@@ -1530,6 +1530,372 @@ def prepare_multichoice_eval(*, args, device, output_dir, weak_probe) -> tuple[l
     return eval3_examples, weak_eval3_acc
 
 
+
+
+def build_run_plan(
+    *,
+    args,
+    runs,
+    lora_examples,
+    strong_examples,
+    strong_train_labels,
+    weak_preds_strong,
+    weak_probs_strong,
+    committee_disagreement_strong,
+    residuals,
+    knn_stats,
+    rp_scores,
+    el_scores,
+    scores,
+    custom_scores,
+    device,
+) -> dict:
+    """Turn the scores and diagnostics into the arm subsets a sweep trains on.
+
+    Everything between scoring and the train loop: the residual and confidence
+    bands, every run_subsets entry, the curricula, the weights, and the random
+    controls. Returns one dict; "bands" inside it carries the per-band filters
+    and balanced indices the report writers read.
+    """
+    middle_indices, middle_filter = middle_residual_indices(residuals, args.residual_keep_middle_frac)
+    middle_balanced_indices = hard_weak_label_balance(
+        middle_indices,
+        weak_preds_strong,
+        args.seed,
+    )
+    weak_confidences_strong = 2.0 * np.abs(weak_probs_strong - 0.5)
+    confidence_middle_indices, confidence_middle_filter = score_band_indices(
+        weak_confidences_strong,
+        args.confidence_keep_frac,
+        "middle",
+    )
+    confidence_middle_balanced_indices = hard_weak_label_balance(
+        confidence_middle_indices,
+        weak_preds_strong,
+        args.seed + SEED_OFFSETS["confidence_middle"],
+    )
+    confidence_high_indices, confidence_high_filter = score_band_indices(
+        weak_confidences_strong,
+        args.confidence_keep_frac,
+        "high",
+    )
+    confidence_high_balanced_indices = hard_weak_label_balance(
+        confidence_high_indices,
+        weak_preds_strong,
+        args.seed + SEED_OFFSETS["confidence_high"],
+    )
+    knn_middle_indices, knn_middle_filter = score_band_indices(
+        knn_stats["knn_correct_rate"],
+        args.knn_keep_middle_frac,
+        "middle",
+    )
+    knn_middle_balanced_indices = hard_weak_label_balance(
+        knn_middle_indices,
+        weak_preds_strong,
+        args.seed + SEED_OFFSETS["knn_middle"],
+    )
+    knn_mixed_indices, knn_mixed_filter = score_closest_indices(
+        knn_stats["knn_correct_rate"],
+        args.knn_keep_middle_frac,
+        args.knn_mixed_center,
+        "mixed",
+    )
+    knn_mixed_balanced_indices = hard_weak_label_balance(
+        knn_mixed_indices,
+        weak_preds_strong,
+        args.seed + SEED_OFFSETS["knn_mixed"],
+    )
+    knn_high_indices, knn_high_filter = score_band_indices(
+        knn_stats["knn_correct_rate"],
+        args.knn_keep_middle_frac,
+        "high",
+    )
+    knn_high_balanced_indices = hard_weak_label_balance(
+        knn_high_indices,
+        weak_preds_strong,
+        args.seed + SEED_OFFSETS["knn_high"],
+    )
+    committee_agree_indices, committee_agree_filter = score_band_indices(
+        committee_disagreement_strong,
+        args.committee_keep_frac,
+        "low",
+    )
+    committee_agree_balanced_indices = hard_weak_label_balance(
+        committee_agree_indices,
+        weak_preds_strong,
+        args.seed + SEED_OFFSETS["committee_agree"],
+    )
+    committee_disagree_indices, committee_disagree_filter = score_band_indices(
+        committee_disagreement_strong,
+        args.committee_keep_frac,
+        "high",
+    )
+    committee_disagree_balanced_indices = hard_weak_label_balance(
+        committee_disagree_indices,
+        weak_preds_strong,
+        args.seed + SEED_OFFSETS["committee_disagree"],
+    )
+    random_control_size = args.random_control_size or len(middle_balanced_indices)
+
+    weak_labels = weak_preds_strong.tolist()
+    # weak_label_balanced = the FULL no-filter set balanced by the weak predicted label.
+    # With weak_label (unbalanced full), random_balanced_f50 (balanced half) and
+    # random_unbalanced_f50 (unbalanced half) it forms a balanced x fraction 2x2, so a
+    # "random > no-filter" gap can be split into a balancing effect vs a data-fraction effect.
+    weak_label_balanced_indices = hard_weak_label_balance(
+        np.arange(len(weak_preds_strong)), weak_preds_strong, args.seed + SEED_OFFSETS["weak_label_balanced"]
+    )
+    # Filter only correct weak points: the oracle / best-case label-noise
+    # filter -- keep only the strong_train examples whose weak label already equals gold. On
+    # this subset the weak labels are noise-free, so it upper-bounds what any noise-removing
+    # selector (confidence / kNN / rp / el) could buy. If it barely beats base, label noise is
+    # not the bottleneck (recall / format is). Uses gold only to SELECT; the labels trained on
+    # are still the weak ones (which equal gold here by construction).
+    weak_correct_indices = np.where(weak_preds_strong == strong_train_labels)[0]
+    weak_correct_balanced_indices = hard_weak_label_balance(
+        weak_correct_indices, weak_preds_strong, args.seed + SEED_OFFSETS["weak_correct_balanced"]
+    )
+    # Curriculum: same full no-filter set as weak_label, trained in a fixed order by weak
+    # confidence (easy = most-confident first, hard = least-confident first). Control is
+    # weak_label (random order); see train_lora_model's curriculum_order.
+    curriculum_orders = {
+        "curriculum_easy": list(np.argsort(-weak_confidences_strong)),
+        "curriculum_hard": list(np.argsort(weak_confidences_strong)),
+    }
+    # Continuous-weighting (loss-adaptation): the *_weighted runs train the FULL set but weight
+    # each example's loss by a selection score (temperature = args.weight_temperature; T->inf is
+    # no-filter, T->0 is hard top-selection). Smooth counterpart of the rp_high / el_high /
+    # confidence_high bands. rp_scores + weak_confidences_strong are always available; el_scores
+    # only when an el_* run is requested (el_weighted starts with "el_", so it triggers it).
+    wT = float(getattr(args, "weight_temperature", 1.0))
+    run_weights: dict[str, np.ndarray] = {
+        "rp_weighted": scores_to_weights(rp_scores, wT),
+        "conf_weighted": scores_to_weights(weak_confidences_strong, wT),
+    }
+    if el_scores is not None:
+        run_weights["el_weighted"] = scores_to_weights(el_scores, wT)
+    run_subsets: dict[str, tuple[list[LoraExample], list[int]]] = {
+        "ground_truth": (strong_examples, strong_train_labels.tolist()),
+        "weak_label": (strong_examples, weak_labels),
+        "rp_weighted": (strong_examples, weak_labels),
+        "el_weighted": (strong_examples, weak_labels),
+        "conf_weighted": (strong_examples, weak_labels),
+        "weak_label_balanced": (
+            [strong_examples[int(i)] for i in weak_label_balanced_indices],
+            [weak_labels[int(i)] for i in weak_label_balanced_indices],
+        ),
+        "weak_correct_only": (
+            [strong_examples[int(i)] for i in weak_correct_indices],
+            [weak_labels[int(i)] for i in weak_correct_indices],
+        ),
+        "weak_correct_only_balanced": (
+            [strong_examples[int(i)] for i in weak_correct_balanced_indices],
+            [weak_labels[int(i)] for i in weak_correct_balanced_indices],
+        ),
+        "curriculum_easy": (strong_examples, weak_labels),
+        "curriculum_hard": (strong_examples, weak_labels),
+        "middle_unbalanced": (
+            [strong_examples[int(i)] for i in middle_indices],
+            [weak_labels[int(i)] for i in middle_indices],
+        ),
+        "middle_balanced": (
+            [strong_examples[int(i)] for i in middle_balanced_indices],
+            [weak_labels[int(i)] for i in middle_balanced_indices],
+        ),
+        "confidence_middle_unbalanced": (
+            [strong_examples[int(i)] for i in confidence_middle_indices],
+            [weak_labels[int(i)] for i in confidence_middle_indices],
+        ),
+        "confidence_middle_balanced": (
+            [strong_examples[int(i)] for i in confidence_middle_balanced_indices],
+            [weak_labels[int(i)] for i in confidence_middle_balanced_indices],
+        ),
+        "confidence_high_unbalanced": (
+            [strong_examples[int(i)] for i in confidence_high_indices],
+            [weak_labels[int(i)] for i in confidence_high_indices],
+        ),
+        "confidence_high_balanced": (
+            [strong_examples[int(i)] for i in confidence_high_balanced_indices],
+            [weak_labels[int(i)] for i in confidence_high_balanced_indices],
+        ),
+        "knn_middle_unbalanced": (
+            [strong_examples[int(i)] for i in knn_middle_indices],
+            [weak_labels[int(i)] for i in knn_middle_indices],
+        ),
+        "knn_middle_balanced": (
+            [strong_examples[int(i)] for i in knn_middle_balanced_indices],
+            [weak_labels[int(i)] for i in knn_middle_balanced_indices],
+        ),
+        "knn_mixed_unbalanced": (
+            [strong_examples[int(i)] for i in knn_mixed_indices],
+            [weak_labels[int(i)] for i in knn_mixed_indices],
+        ),
+        "knn_mixed_balanced": (
+            [strong_examples[int(i)] for i in knn_mixed_balanced_indices],
+            [weak_labels[int(i)] for i in knn_mixed_balanced_indices],
+        ),
+        "knn_high_unbalanced": (
+            [strong_examples[int(i)] for i in knn_high_indices],
+            [weak_labels[int(i)] for i in knn_high_indices],
+        ),
+        "knn_high_balanced": (
+            [strong_examples[int(i)] for i in knn_high_balanced_indices],
+            [weak_labels[int(i)] for i in knn_high_balanced_indices],
+        ),
+        "committee_agree_unbalanced": (
+            [strong_examples[int(i)] for i in committee_agree_indices],
+            [weak_labels[int(i)] for i in committee_agree_indices],
+        ),
+        "committee_agree_balanced": (
+            [strong_examples[int(i)] for i in committee_agree_balanced_indices],
+            [weak_labels[int(i)] for i in committee_agree_balanced_indices],
+        ),
+        "committee_disagree_unbalanced": (
+            [strong_examples[int(i)] for i in committee_disagree_indices],
+            [weak_labels[int(i)] for i in committee_disagree_indices],
+        ),
+        "committee_disagree_balanced": (
+            [strong_examples[int(i)] for i in committee_disagree_balanced_indices],
+            [weak_labels[int(i)] for i in committee_disagree_balanced_indices],
+        ),
+    }
+    # weak_strong_agree: keep the points where the fine-tuned weak model and the UNTUNED strong
+    # base agree on the yes/no prediction (gold-free "label likely correct" proxy -- if both
+    # independent models say the same thing, the weak label is more trustworthy). Requires one
+    # extra base pass over strong_train, so only computed when an agree/disagree arm is requested.
+    if any(r in runs for r in ("weak_strong_agree_balanced", "weak_strong_disagree_balanced")):
+        from run_dream_w2s_baselines import load_strong_model_and_tokenizer
+        _bm, _bt = load_strong_model_and_tokenizer(args, trainable_lora=False)
+        _, _base_rows = evaluate_yes_no(
+            _bm, _bt, lora_examples["strong_train"],
+            max(int(args.strong_batch_size), 8), device, args.max_length,
+            "score base on strong_train (agree arm)",
+        )
+        base_preds_strong = (np.asarray([float(r["prob_label1"]) for r in _base_rows]) >= 0.5).astype(int)
+        del _bm
+        clear_memory()
+        agree_idx = np.where(base_preds_strong == weak_preds_strong)[0]
+        disagree_idx = np.where(base_preds_strong != weak_preds_strong)[0]
+        agree_bal = hard_weak_label_balance(agree_idx, weak_preds_strong, args.seed + SEED_OFFSETS["agree_full"])
+        disagree_bal = hard_weak_label_balance(disagree_idx, weak_preds_strong, args.seed + SEED_OFFSETS["disagree_full"])
+        run_subsets["weak_strong_agree_balanced"] = (
+            [strong_examples[int(i)] for i in agree_bal],
+            [weak_labels[int(i)] for i in agree_bal],
+        )
+        run_subsets["weak_strong_disagree_balanced"] = (
+            [strong_examples[int(i)] for i in disagree_bal],
+            [weak_labels[int(i)] for i in disagree_bal],
+        )
+        print(f"[weak_strong_agree] base-weak agreement rate: {len(agree_idx) / max(1, len(weak_preds_strong)):.3f} "
+              f"(agree {len(agree_idx)}, balanced {len(agree_bal)}; disagree {len(disagree_idx)}, balanced {len(disagree_bal)})")
+    # Optional committee selection sweep over keep fractions (label-complexity /
+    # data-efficiency curve): for each f, keep the most-reliable (low-disagreement)
+    # or most-boundary (high-disagreement) f-fraction, plus a matched random_balanced.
+    committee_keep_fracs = [
+        float(x) for x in (args.committee_keep_fracs or "").split(",") if x.strip()
+    ]
+    n_strong_examples = len(strong_examples)
+    build_keep_fraction_arms(
+        args=args,
+        run_subsets=run_subsets,
+        curriculum_orders=curriculum_orders,
+        scores=scores,
+        custom_scores=custom_scores,
+        committee_keep_fracs=committee_keep_fracs,
+        committee_disagreement_strong=committee_disagreement_strong,
+        weak_confidences_strong=weak_confidences_strong,
+        weak_preds_strong=weak_preds_strong,
+        weak_labels=weak_labels,
+        strong_examples=strong_examples,
+        residuals=residuals,
+        knn_stats=knn_stats,
+        random_balanced_indices=random_balanced_indices,
+        n_strong_examples=n_strong_examples,
+    )
+
+    # Disjoint equal-size quantile bins for a dose-response / separation analysis (--quantile-bins K):
+    # for rp / el / confidence, split into K equal-size bins by score percentile; q0 = highest-score
+    # bin (top 1/K) .. q{K-1} = lowest. All bins are the SAME size, so accuracy differences isolate
+    # the score's discriminability from sample-size effects (unlike a cumulative top-x% sweep). A
+    # genuine ordering signal -> monotonic accuracy across bins; separation = q0 - q{K-1}.
+    if args.quantile_bins and args.quantile_bins > 1:
+        K = int(args.quantile_bins)
+        qsignals = {"rp": rp_scores, "confidence": weak_confidences_strong}
+        if el_scores is not None:
+            qsignals["el"] = el_scores
+        for sidx, (sig_name, sig_scores) in enumerate(qsignals.items()):
+            for i in range(K):
+                hi, lo = 1.0 - i / K, 1.0 - (i + 1) / K
+                q_idx = score_percentile_band_indices(sig_scores, lo, hi)
+                q_bal = hard_weak_label_balance(q_idx, weak_preds_strong, args.seed + SEED_OFFSETS["quantile"] + 100 * sidx + i)
+                run_subsets[f"{sig_name}_q{i}_balanced"] = (
+                    [strong_examples[int(j)] for j in q_bal],
+                    [weak_labels[int(j)] for j in q_bal],
+                )
+                # GT-rescue variant: the SAME bin subset trained with gold labels instead of
+                # weak labels. Separates the two toxicity mechanisms for a bad bin: if GT
+                # cannot rescue it either, the points are unlearnable (representation-side);
+                # if GT rescues it, the damage was systematic weak-label error.
+                run_subsets[f"{sig_name}_q{i}_gt_balanced"] = (
+                    [strong_examples[int(j)] for j in q_bal],
+                    [int(strong_train_labels[int(j)]) for j in q_bal],
+                )
+
+    random_run_names: list[str] = []
+    random_unbalanced_run_names: list[str] = []
+    if "random_unbalanced" in runs:
+        runs = [name for name in runs if name != "random_unbalanced"]
+        random_unbalanced_size = args.random_unbalanced_size or len(middle_indices)
+        for idx in range(args.random_control_count):
+            run_name = f"random_unbalanced_{idx}"
+            selected = random_unbalanced_indices(
+                len(strong_examples),
+                random_unbalanced_size,
+                args.seed + SEED_OFFSETS["random_unbalanced"] + idx,
+            )
+            run_subsets[run_name] = (
+                [strong_examples[int(i)] for i in selected],
+                [weak_labels[int(i)] for i in selected],
+            )
+            random_unbalanced_run_names.append(run_name)
+            runs.append(run_name)
+
+    if "random_balanced" in runs:
+        runs = [name for name in runs if name != "random_balanced"]
+        for idx in range(args.random_control_count):
+            run_name = f"random_balanced_{idx}"
+            selected = random_balanced_indices(weak_preds_strong, random_control_size, args.seed + SEED_OFFSETS["random_balanced"] + idx)
+            run_subsets[run_name] = (
+                [strong_examples[int(i)] for i in selected],
+                [weak_labels[int(i)] for i in selected],
+            )
+            random_run_names.append(run_name)
+            runs.append(run_name)
+    return {
+        "runs": runs,
+        "run_subsets": run_subsets,
+        "curriculum_orders": curriculum_orders,
+        "run_weights": run_weights,
+        "random_run_names": random_run_names,
+        "random_unbalanced_run_names": random_unbalanced_run_names,
+        "bands": {
+            "middle_filter": middle_filter,
+            "confidence_middle_filter": confidence_middle_filter,
+            "confidence_high_filter": confidence_high_filter,
+            "knn_middle_filter": knn_middle_filter,
+            "knn_mixed_filter": knn_mixed_filter,
+            "committee_agree_filter": committee_agree_filter,
+            "committee_disagree_filter": committee_disagree_filter,
+            "middle_balanced_indices": middle_balanced_indices,
+            "confidence_middle_balanced_indices": confidence_middle_balanced_indices,
+            "confidence_high_balanced_indices": confidence_high_balanced_indices,
+            "knn_middle_balanced_indices": knn_middle_balanced_indices,
+            "knn_mixed_balanced_indices": knn_mixed_balanced_indices,
+            "committee_agree_balanced_indices": committee_agree_balanced_indices,
+            "committee_disagree_balanced_indices": committee_disagree_balanced_indices,
+        },
+    }
+
 def main() -> None:
     args = parse_args()
     runs = requested_runs(args)
@@ -1725,325 +2091,48 @@ def main() -> None:
         print(f"[dump-el] wrote {args.dump_el}")
 
     best_row = next(row for row in map_rows if row["name"] == best_map.name)
-    middle_indices, middle_filter = middle_residual_indices(residuals, args.residual_keep_middle_frac)
-    middle_balanced_indices = hard_weak_label_balance(
-        middle_indices,
-        weak_preds_strong,
-        args.seed,
-    )
-    weak_confidences_strong = 2.0 * np.abs(weak_probs_strong - 0.5)
-    confidence_middle_indices, confidence_middle_filter = score_band_indices(
-        weak_confidences_strong,
-        args.confidence_keep_frac,
-        "middle",
-    )
-    confidence_middle_balanced_indices = hard_weak_label_balance(
-        confidence_middle_indices,
-        weak_preds_strong,
-        args.seed + SEED_OFFSETS["confidence_middle"],
-    )
-    confidence_high_indices, confidence_high_filter = score_band_indices(
-        weak_confidences_strong,
-        args.confidence_keep_frac,
-        "high",
-    )
-    confidence_high_balanced_indices = hard_weak_label_balance(
-        confidence_high_indices,
-        weak_preds_strong,
-        args.seed + SEED_OFFSETS["confidence_high"],
-    )
-    knn_middle_indices, knn_middle_filter = score_band_indices(
-        knn_stats["knn_correct_rate"],
-        args.knn_keep_middle_frac,
-        "middle",
-    )
-    knn_middle_balanced_indices = hard_weak_label_balance(
-        knn_middle_indices,
-        weak_preds_strong,
-        args.seed + SEED_OFFSETS["knn_middle"],
-    )
-    knn_mixed_indices, knn_mixed_filter = score_closest_indices(
-        knn_stats["knn_correct_rate"],
-        args.knn_keep_middle_frac,
-        args.knn_mixed_center,
-        "mixed",
-    )
-    knn_mixed_balanced_indices = hard_weak_label_balance(
-        knn_mixed_indices,
-        weak_preds_strong,
-        args.seed + SEED_OFFSETS["knn_mixed"],
-    )
-    knn_high_indices, knn_high_filter = score_band_indices(
-        knn_stats["knn_correct_rate"],
-        args.knn_keep_middle_frac,
-        "high",
-    )
-    knn_high_balanced_indices = hard_weak_label_balance(
-        knn_high_indices,
-        weak_preds_strong,
-        args.seed + SEED_OFFSETS["knn_high"],
-    )
-    committee_agree_indices, committee_agree_filter = score_band_indices(
-        committee_disagreement_strong,
-        args.committee_keep_frac,
-        "low",
-    )
-    committee_agree_balanced_indices = hard_weak_label_balance(
-        committee_agree_indices,
-        weak_preds_strong,
-        args.seed + SEED_OFFSETS["committee_agree"],
-    )
-    committee_disagree_indices, committee_disagree_filter = score_band_indices(
-        committee_disagreement_strong,
-        args.committee_keep_frac,
-        "high",
-    )
-    committee_disagree_balanced_indices = hard_weak_label_balance(
-        committee_disagree_indices,
-        weak_preds_strong,
-        args.seed + SEED_OFFSETS["committee_disagree"],
-    )
-    random_control_size = args.random_control_size or len(middle_balanced_indices)
-
     strong_examples = lora_examples["strong_train"]
     eval_examples = lora_examples["test"]
     eval3_examples, weak_eval3_acc = prepare_multichoice_eval(
         args=args, device=device, output_dir=output_dir, weak_probe=weak_probe
     )
-    weak_labels = weak_preds_strong.tolist()
-    # weak_label_balanced = the FULL no-filter set balanced by the weak predicted label.
-    # With weak_label (unbalanced full), random_balanced_f50 (balanced half) and
-    # random_unbalanced_f50 (unbalanced half) it forms a balanced x fraction 2x2, so a
-    # "random > no-filter" gap can be split into a balancing effect vs a data-fraction effect.
-    weak_label_balanced_indices = hard_weak_label_balance(
-        np.arange(len(weak_preds_strong)), weak_preds_strong, args.seed + SEED_OFFSETS["weak_label_balanced"]
-    )
-    # Filter only correct weak points: the oracle / best-case label-noise
-    # filter -- keep only the strong_train examples whose weak label already equals gold. On
-    # this subset the weak labels are noise-free, so it upper-bounds what any noise-removing
-    # selector (confidence / kNN / rp / el) could buy. If it barely beats base, label noise is
-    # not the bottleneck (recall / format is). Uses gold only to SELECT; the labels trained on
-    # are still the weak ones (which equal gold here by construction).
-    weak_correct_indices = np.where(weak_preds_strong == strong_train_labels)[0]
-    weak_correct_balanced_indices = hard_weak_label_balance(
-        weak_correct_indices, weak_preds_strong, args.seed + SEED_OFFSETS["weak_correct_balanced"]
-    )
-    # Curriculum: same full no-filter set as weak_label, trained in a fixed order by weak
-    # confidence (easy = most-confident first, hard = least-confident first). Control is
-    # weak_label (random order); see train_lora_model's curriculum_order.
-    curriculum_orders = {
-        "curriculum_easy": list(np.argsort(-weak_confidences_strong)),
-        "curriculum_hard": list(np.argsort(weak_confidences_strong)),
-    }
-    # Continuous-weighting (loss-adaptation): the *_weighted runs train the FULL set but weight
-    # each example's loss by a selection score (temperature = args.weight_temperature; T->inf is
-    # no-filter, T->0 is hard top-selection). Smooth counterpart of the rp_high / el_high /
-    # confidence_high bands. rp_scores + weak_confidences_strong are always available; el_scores
-    # only when an el_* run is requested (el_weighted starts with "el_", so it triggers it).
-    wT = float(getattr(args, "weight_temperature", 1.0))
-    run_weights: dict[str, np.ndarray] = {
-        "rp_weighted": scores_to_weights(rp_scores, wT),
-        "conf_weighted": scores_to_weights(weak_confidences_strong, wT),
-    }
-    if el_scores is not None:
-        run_weights["el_weighted"] = scores_to_weights(el_scores, wT)
-    run_subsets: dict[str, tuple[list[LoraExample], list[int]]] = {
-        "ground_truth": (strong_examples, strong_train_labels.tolist()),
-        "weak_label": (strong_examples, weak_labels),
-        "rp_weighted": (strong_examples, weak_labels),
-        "el_weighted": (strong_examples, weak_labels),
-        "conf_weighted": (strong_examples, weak_labels),
-        "weak_label_balanced": (
-            [strong_examples[int(i)] for i in weak_label_balanced_indices],
-            [weak_labels[int(i)] for i in weak_label_balanced_indices],
-        ),
-        "weak_correct_only": (
-            [strong_examples[int(i)] for i in weak_correct_indices],
-            [weak_labels[int(i)] for i in weak_correct_indices],
-        ),
-        "weak_correct_only_balanced": (
-            [strong_examples[int(i)] for i in weak_correct_balanced_indices],
-            [weak_labels[int(i)] for i in weak_correct_balanced_indices],
-        ),
-        "curriculum_easy": (strong_examples, weak_labels),
-        "curriculum_hard": (strong_examples, weak_labels),
-        "middle_unbalanced": (
-            [strong_examples[int(i)] for i in middle_indices],
-            [weak_labels[int(i)] for i in middle_indices],
-        ),
-        "middle_balanced": (
-            [strong_examples[int(i)] for i in middle_balanced_indices],
-            [weak_labels[int(i)] for i in middle_balanced_indices],
-        ),
-        "confidence_middle_unbalanced": (
-            [strong_examples[int(i)] for i in confidence_middle_indices],
-            [weak_labels[int(i)] for i in confidence_middle_indices],
-        ),
-        "confidence_middle_balanced": (
-            [strong_examples[int(i)] for i in confidence_middle_balanced_indices],
-            [weak_labels[int(i)] for i in confidence_middle_balanced_indices],
-        ),
-        "confidence_high_unbalanced": (
-            [strong_examples[int(i)] for i in confidence_high_indices],
-            [weak_labels[int(i)] for i in confidence_high_indices],
-        ),
-        "confidence_high_balanced": (
-            [strong_examples[int(i)] for i in confidence_high_balanced_indices],
-            [weak_labels[int(i)] for i in confidence_high_balanced_indices],
-        ),
-        "knn_middle_unbalanced": (
-            [strong_examples[int(i)] for i in knn_middle_indices],
-            [weak_labels[int(i)] for i in knn_middle_indices],
-        ),
-        "knn_middle_balanced": (
-            [strong_examples[int(i)] for i in knn_middle_balanced_indices],
-            [weak_labels[int(i)] for i in knn_middle_balanced_indices],
-        ),
-        "knn_mixed_unbalanced": (
-            [strong_examples[int(i)] for i in knn_mixed_indices],
-            [weak_labels[int(i)] for i in knn_mixed_indices],
-        ),
-        "knn_mixed_balanced": (
-            [strong_examples[int(i)] for i in knn_mixed_balanced_indices],
-            [weak_labels[int(i)] for i in knn_mixed_balanced_indices],
-        ),
-        "knn_high_unbalanced": (
-            [strong_examples[int(i)] for i in knn_high_indices],
-            [weak_labels[int(i)] for i in knn_high_indices],
-        ),
-        "knn_high_balanced": (
-            [strong_examples[int(i)] for i in knn_high_balanced_indices],
-            [weak_labels[int(i)] for i in knn_high_balanced_indices],
-        ),
-        "committee_agree_unbalanced": (
-            [strong_examples[int(i)] for i in committee_agree_indices],
-            [weak_labels[int(i)] for i in committee_agree_indices],
-        ),
-        "committee_agree_balanced": (
-            [strong_examples[int(i)] for i in committee_agree_balanced_indices],
-            [weak_labels[int(i)] for i in committee_agree_balanced_indices],
-        ),
-        "committee_disagree_unbalanced": (
-            [strong_examples[int(i)] for i in committee_disagree_indices],
-            [weak_labels[int(i)] for i in committee_disagree_indices],
-        ),
-        "committee_disagree_balanced": (
-            [strong_examples[int(i)] for i in committee_disagree_balanced_indices],
-            [weak_labels[int(i)] for i in committee_disagree_balanced_indices],
-        ),
-    }
-    # weak_strong_agree: keep the points where the fine-tuned weak model and the UNTUNED strong
-    # base agree on the yes/no prediction (gold-free "label likely correct" proxy -- if both
-    # independent models say the same thing, the weak label is more trustworthy). Requires one
-    # extra base pass over strong_train, so only computed when an agree/disagree arm is requested.
-    if any(r in runs for r in ("weak_strong_agree_balanced", "weak_strong_disagree_balanced")):
-        from run_dream_w2s_baselines import load_strong_model_and_tokenizer
-        _bm, _bt = load_strong_model_and_tokenizer(args, trainable_lora=False)
-        _, _base_rows = evaluate_yes_no(
-            _bm, _bt, lora_examples["strong_train"],
-            max(int(args.strong_batch_size), 8), device, args.max_length,
-            "score base on strong_train (agree arm)",
-        )
-        base_preds_strong = (np.asarray([float(r["prob_label1"]) for r in _base_rows]) >= 0.5).astype(int)
-        del _bm
-        clear_memory()
-        agree_idx = np.where(base_preds_strong == weak_preds_strong)[0]
-        disagree_idx = np.where(base_preds_strong != weak_preds_strong)[0]
-        agree_bal = hard_weak_label_balance(agree_idx, weak_preds_strong, args.seed + SEED_OFFSETS["agree_full"])
-        disagree_bal = hard_weak_label_balance(disagree_idx, weak_preds_strong, args.seed + SEED_OFFSETS["disagree_full"])
-        run_subsets["weak_strong_agree_balanced"] = (
-            [strong_examples[int(i)] for i in agree_bal],
-            [weak_labels[int(i)] for i in agree_bal],
-        )
-        run_subsets["weak_strong_disagree_balanced"] = (
-            [strong_examples[int(i)] for i in disagree_bal],
-            [weak_labels[int(i)] for i in disagree_bal],
-        )
-        print(f"[weak_strong_agree] base-weak agreement rate: {len(agree_idx) / max(1, len(weak_preds_strong)):.3f} "
-              f"(agree {len(agree_idx)}, balanced {len(agree_bal)}; disagree {len(disagree_idx)}, balanced {len(disagree_bal)})")
-    # Optional committee selection sweep over keep fractions (label-complexity /
-    # data-efficiency curve): for each f, keep the most-reliable (low-disagreement)
-    # or most-boundary (high-disagreement) f-fraction, plus a matched random_balanced.
-    committee_keep_fracs = [
-        float(x) for x in (args.committee_keep_fracs or "").split(",") if x.strip()
-    ]
-    n_strong_examples = len(strong_examples)
-    build_keep_fraction_arms(
+    plan = build_run_plan(
         args=args,
-        run_subsets=run_subsets,
-        curriculum_orders=curriculum_orders,
-        scores=scores,
-        custom_scores=custom_scores,
-        committee_keep_fracs=committee_keep_fracs,
-        committee_disagreement_strong=committee_disagreement_strong,
-        weak_confidences_strong=weak_confidences_strong,
-        weak_preds_strong=weak_preds_strong,
-        weak_labels=weak_labels,
+        runs=runs,
+        lora_examples=lora_examples,
         strong_examples=strong_examples,
+        strong_train_labels=strong_train_labels,
+        weak_preds_strong=weak_preds_strong,
+        weak_probs_strong=weak_probs_strong,
+        committee_disagreement_strong=committee_disagreement_strong,
         residuals=residuals,
         knn_stats=knn_stats,
-        random_balanced_indices=random_balanced_indices,
-        n_strong_examples=n_strong_examples,
+        rp_scores=rp_scores,
+        el_scores=el_scores,
+        scores=scores,
+        custom_scores=custom_scores,
+        device=device,
     )
-
-    # Disjoint equal-size quantile bins for a dose-response / separation analysis (--quantile-bins K):
-    # for rp / el / confidence, split into K equal-size bins by score percentile; q0 = highest-score
-    # bin (top 1/K) .. q{K-1} = lowest. All bins are the SAME size, so accuracy differences isolate
-    # the score's discriminability from sample-size effects (unlike a cumulative top-x% sweep). A
-    # genuine ordering signal -> monotonic accuracy across bins; separation = q0 - q{K-1}.
-    if args.quantile_bins and args.quantile_bins > 1:
-        K = int(args.quantile_bins)
-        qsignals = {"rp": rp_scores, "confidence": weak_confidences_strong}
-        if el_scores is not None:
-            qsignals["el"] = el_scores
-        for sidx, (sig_name, scores) in enumerate(qsignals.items()):
-            for i in range(K):
-                hi, lo = 1.0 - i / K, 1.0 - (i + 1) / K
-                q_idx = score_percentile_band_indices(scores, lo, hi)
-                q_bal = hard_weak_label_balance(q_idx, weak_preds_strong, args.seed + SEED_OFFSETS["quantile"] + 100 * sidx + i)
-                run_subsets[f"{sig_name}_q{i}_balanced"] = (
-                    [strong_examples[int(j)] for j in q_bal],
-                    [weak_labels[int(j)] for j in q_bal],
-                )
-                # GT-rescue variant: the SAME bin subset trained with gold labels instead of
-                # weak labels. Separates the two toxicity mechanisms for a bad bin: if GT
-                # cannot rescue it either, the points are unlearnable (representation-side);
-                # if GT rescues it, the damage was systematic weak-label error.
-                run_subsets[f"{sig_name}_q{i}_gt_balanced"] = (
-                    [strong_examples[int(j)] for j in q_bal],
-                    [int(strong_train_labels[int(j)]) for j in q_bal],
-                )
-
-    random_run_names: list[str] = []
-    random_unbalanced_run_names: list[str] = []
-    if "random_unbalanced" in runs:
-        runs = [name for name in runs if name != "random_unbalanced"]
-        random_unbalanced_size = args.random_unbalanced_size or len(middle_indices)
-        for idx in range(args.random_control_count):
-            run_name = f"random_unbalanced_{idx}"
-            selected = random_unbalanced_indices(
-                len(strong_examples),
-                random_unbalanced_size,
-                args.seed + SEED_OFFSETS["random_unbalanced"] + idx,
-            )
-            run_subsets[run_name] = (
-                [strong_examples[int(i)] for i in selected],
-                [weak_labels[int(i)] for i in selected],
-            )
-            random_unbalanced_run_names.append(run_name)
-            runs.append(run_name)
-
-    if "random_balanced" in runs:
-        runs = [name for name in runs if name != "random_balanced"]
-        for idx in range(args.random_control_count):
-            run_name = f"random_balanced_{idx}"
-            selected = random_balanced_indices(weak_preds_strong, random_control_size, args.seed + SEED_OFFSETS["random_balanced"] + idx)
-            run_subsets[run_name] = (
-                [strong_examples[int(i)] for i in selected],
-                [weak_labels[int(i)] for i in selected],
-            )
-            random_run_names.append(run_name)
-            runs.append(run_name)
+    runs = plan["runs"]
+    run_subsets = plan["run_subsets"]
+    curriculum_orders = plan["curriculum_orders"]
+    run_weights = plan["run_weights"]
+    random_run_names = plan["random_run_names"]
+    random_unbalanced_run_names = plan["random_unbalanced_run_names"]
+    middle_filter = plan["bands"]["middle_filter"]
+    confidence_middle_filter = plan["bands"]["confidence_middle_filter"]
+    confidence_high_filter = plan["bands"]["confidence_high_filter"]
+    knn_middle_filter = plan["bands"]["knn_middle_filter"]
+    knn_mixed_filter = plan["bands"]["knn_mixed_filter"]
+    committee_agree_filter = plan["bands"]["committee_agree_filter"]
+    committee_disagree_filter = plan["bands"]["committee_disagree_filter"]
+    middle_balanced_indices = plan["bands"]["middle_balanced_indices"]
+    confidence_middle_balanced_indices = plan["bands"]["confidence_middle_balanced_indices"]
+    confidence_high_balanced_indices = plan["bands"]["confidence_high_balanced_indices"]
+    knn_middle_balanced_indices = plan["bands"]["knn_middle_balanced_indices"]
+    knn_mixed_balanced_indices = plan["bands"]["knn_mixed_balanced_indices"]
+    committee_agree_balanced_indices = plan["bands"]["committee_agree_balanced_indices"]
+    committee_disagree_balanced_indices = plan["bands"]["committee_disagree_balanced_indices"]
 
     prediction_columns: dict[str, list[dict]] = {}
     run_reports: dict[str, dict] = {}
