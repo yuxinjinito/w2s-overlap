@@ -76,6 +76,8 @@ def _oof_regress(
         Xtr = torch.tensor((X[train_idx] - mu) / sd, dtype=torch.float32, device=dev)
         ytr = torch.tensor(y[train_idx], dtype=torch.float32, device=dev)
         Xte = torch.tensor((X[test_idx] - mu) / sd, dtype=torch.float32, device=dev)
+        # global torch seeding, kept: a per-call Generator would change the draw
+        # stream and with it every recorded mlpstep1 number
         torch.manual_seed(seed * 1000 + fi)
         model = _RegMLP(X.shape[1], hidden).to(dev)
         opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
