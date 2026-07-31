@@ -98,6 +98,7 @@ SEED_OFFSETS = {
     "custom_low": 31500,            # + 1000*slot, slots 0..3 reach 34500
     "l2robust_high": 35000,
     "l2robust_low": 35500,
+    "purity_flip": 36000,           # + target percent per grid point
 }
 
 _vals = list(SEED_OFFSETS.values())

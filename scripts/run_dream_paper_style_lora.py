@@ -282,6 +282,15 @@ def parse_args() -> argparse.Namespace:
             "LoRA training. Cheap check for whether cross-fitting de-saturates kNN."
         ),
     )
+    parser.add_argument(
+        "--purity-grid",
+        default="",
+        help=(
+            "Comma-separated target purities in percent (e.g. 50,60,80,90,100) for the "
+            "purity_grid runs: one random subset at the random-control budget, weak labels "
+            "flipped toward or away from gold to hit each target. Diagnostic; uses gold."
+        ),
+    )
     parser.add_argument("--random-control-count", type=int, default=3)
     parser.add_argument("--random-control-size", type=int, default=None)
     parser.add_argument("--random-unbalanced-size", type=int, default=None)
@@ -318,6 +327,7 @@ def requested_runs(args: argparse.Namespace) -> list[str]:
         "weak_correct_only_balanced",
         "weak_strong_agree_balanced",
         "weak_strong_disagree_balanced",
+        "purity_grid",
         "rp_weighted",
         "el_weighted",
         "conf_weighted",
@@ -1487,6 +1497,27 @@ def prepare_multichoice_eval(*, args, device, output_dir, weak_probe) -> tuple[l
 
 
 
+def flip_labels_to_purity(labels: list, gold: list, target: float, rng) -> list:
+    """Flip binary labels toward or away from gold until mean(labels == gold) hits target.
+
+    Raising purity flips randomly chosen incorrect rows to gold; lowering flips
+    randomly chosen correct rows to 1 - gold. The flip count is rounded, so the
+    achieved purity lands within 1/(2n) of the target.
+    """
+    labels = [int(x) for x in labels]
+    n = len(labels)
+    correct = [i for i in range(n) if labels[i] == gold[i]]
+    wrong = [i for i in range(n) if labels[i] != gold[i]]
+    want = int(round(target * n))
+    if want > len(correct):
+        for i in rng.choice(wrong, size=want - len(correct), replace=False):
+            labels[int(i)] = int(gold[int(i)])
+    elif want < len(correct):
+        for i in rng.choice(correct, size=len(correct) - want, replace=False):
+            labels[int(i)] = 1 - int(gold[int(i)])
+    return labels
+
+
 def build_run_plan(
     *,
     args,
@@ -1827,6 +1858,26 @@ def build_run_plan(
                 [weak_labels[int(i)] for i in selected],
             )
             random_run_names.append(run_name)
+            runs.append(run_name)
+
+    if "purity_grid" in runs:
+        # one fixed random subset, labels moved to each target purity: selection
+        # never sees the scores, so the line isolates label quality (07/29 ask)
+        runs = [name for name in runs if name != "purity_grid"]
+        gold_all = [int(x) for x in strong_train_labels]
+        base_sel = random_balanced_indices(
+            weak_preds_strong, random_control_size, args.seed + SEED_OFFSETS["purity_flip"]
+        )
+        sub_examples = [strong_examples[int(i)] for i in base_sel]
+        sub_weak = [weak_labels[int(i)] for i in base_sel]
+        sub_gold = [gold_all[int(i)] for i in base_sel]
+        for pt in [int(x) for x in args.purity_grid.split(",") if x.strip()]:
+            run_name = f"random_purity_p{pt}"
+            rng = np.random.default_rng(args.seed + SEED_OFFSETS["purity_flip"] + pt)
+            run_subsets[run_name] = (
+                sub_examples,
+                flip_labels_to_purity(sub_weak, sub_gold, pt / 100.0, rng),
+            )
             runs.append(run_name)
     return {
         "runs": runs,

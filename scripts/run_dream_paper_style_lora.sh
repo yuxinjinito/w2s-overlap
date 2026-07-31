@@ -137,6 +137,7 @@ KNN_REFERENCE_CROSS_FIT="${KNN_REFERENCE_CROSS_FIT:-0}"
 CROSS_FIT_FOLDS="${CROSS_FIT_FOLDS:-5}"
 DIAGNOSTICS_ONLY="${DIAGNOSTICS_ONLY:-0}"
 RANDOM_CONTROL_COUNT="${RANDOM_CONTROL_COUNT:-3}"
+PURITY_GRID="${PURITY_GRID:-}"
 RANDOM_CONTROL_SIZE="${RANDOM_CONTROL_SIZE:-}"
 RANDOM_UNBALANCED_SIZE="${RANDOM_UNBALANCED_SIZE:-}"
 
@@ -270,6 +271,7 @@ python3 scripts/run_dream_paper_style_lora.py \
   --knn-keep-middle-frac "$KNN_KEEP_MIDDLE_FRAC" \
   --knn-mixed-center "$KNN_MIXED_CENTER" \
   --random-control-count "$RANDOM_CONTROL_COUNT" \
+  --purity-grid "$PURITY_GRID" \
   --ridge-values "$RIDGE_VALUES" \
   --pca-dims "$PCA_DIMS" \
   --best-by "$BEST_BY" \
