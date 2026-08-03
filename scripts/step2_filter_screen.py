@@ -112,14 +112,17 @@ def main():
                 w.writerow(row)
         print(f"wrote {args.csv}")
 
-    # same preregistered rule as the MLP screen: a ticket needs corr(v,a) < .95,
-    # a live std, and an errAUROC at least |a|'s
+    # ticket rule for filter candidates: non-degenerate, meaningfully different
+    # from rp (sp_rp < .95), and an error direction no worse than rp's. The first
+    # version of this gate demanded auc >= |a|'s, which is the MLP screen's
+    # diverse-ticket test transplanted with its sign backwards for this family (._.)
     ok = {k: v for k, v in results.items()
-          if v[1]["corr_va"] < 0.95 and v[1]["std"] > 1e-6 and v[1]["auc"] >= ref_auc_a}
+          if v[1]["corr_va"] < 0.95 and v[1]["std"] > 1e-6
+          and v[1]["sp_rp"] < 0.95 and v[1]["auc"] <= ref_auc_rp}
     if not ok:
         print("\nno candidate clears the gate; no tickets")
         return
-    cs1 = max(ok, key=lambda k: ok[k][1]["sp_rp"])
+    cs1 = min(ok, key=lambda k: ok[k][1]["sp_rp"])
     print(f"\nticket: cs1 = {cs1}")
     if args.out:
         np.savez(args.out, weak_preds=wp, cs1=results[cs1][0])
