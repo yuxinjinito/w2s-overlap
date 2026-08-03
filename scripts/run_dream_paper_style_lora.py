@@ -2290,12 +2290,18 @@ def main() -> None:
         args.knn_k,
     )
     if args.dump_acts:
+        # the probe's pre-sigmoid margin: identical to logit(p) in exact math,
+        # but free of the clip censoring at saturated rows
+        weak_margins_strong = (
+            weak_probe(weak_acts["strong_train"].to(device)).detach().cpu().numpy()
+        )
         np.savez_compressed(
             args.dump_acts,
             weak=np.asarray(rep_weak_acts["strong_train"], dtype=np.float32),
             strong=np.asarray(rep_strong_acts["strong_train"], dtype=np.float32),
             weak_preds=np.asarray(weak_preds_strong, dtype=np.int64),
             weak_probs=np.asarray(weak_probs_strong, dtype=np.float32),
+            weak_margin=np.asarray(weak_margins_strong, dtype=np.float32),
             gt=np.asarray(strong_train_labels, dtype=np.int64),
         )
         print(f"[dump-acts] wrote {args.dump_acts}")

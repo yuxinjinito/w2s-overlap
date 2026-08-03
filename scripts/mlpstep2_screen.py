@@ -117,9 +117,14 @@ def main():
     ap.add_argument("--step1", choices=["kernel", "mlp"], default="kernel",
                     help="whose residual the step-2 candidates fit: rp's kernel "
                          "solve or mlpstep1's cross-fitted wd-30 ensemble")
-    ap.add_argument("--step1-target", choices=["hard", "logit"], default="hard",
-                    help="step-1 target: hard 0/1 weak labels or the probe's "
-                         "logit difference (needs weak_probs in the npz)")
+    ap.add_argument("--step1-target", choices=["hard", "logit", "delta"], default="hard",
+                    help="step-1 target: hard 0/1 weak labels; the probe's logit "
+                         "difference (weak_margin if the npz has it, else "
+                         "logit(clip(weak_probs))); or delta, standardized probe "
+                         "evidence minus standardized zero-shot weak evidence "
+                         "(needs --weak-prior-npz)")
+    ap.add_argument("--weak-prior-npz", default="",
+                    help="npz with weak_prior_margin (+ weak_preds guard) for the delta target")
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--epochs", type=int, default=60)
     ap.add_argument("--csv", default="", help="optional path to dump the screen table")
@@ -133,9 +138,27 @@ def main():
     n = len(wp)
     bad = wp != gt
 
-    if args.step1_target == "logit":
+    def probe_margin():
+        if "weak_margin" in d.files:
+            return np.asarray(d["weak_margin"], np.float64)
         probs = np.clip(np.asarray(d["weak_probs"], np.float64), 1e-3, 1 - 1e-3)
-        y = np.log(probs) - np.log1p(-probs)
+        return np.log(probs) - np.log1p(-probs)
+
+    if args.step1_target == "logit":
+        y = probe_margin()
+    elif args.step1_target == "delta":
+        # anti-expert construction: what supervision taught the probe, beyond
+        # what the weak model already believed zero-shot. The two evidence
+        # channels differ in scale, so both are standardized before subtracting.
+        prior = np.load(args.weak_prior_npz)
+        pw = np.asarray(prior["weak_preds"]).astype(int)
+        if (pw == wp).mean() < 0.95:
+            raise ValueError("weak-prior npz misaligned with the acts file")
+        z_probe = probe_margin()
+        z0 = np.asarray(prior["weak_prior_margin"], np.float64)
+        zp = (z_probe - z_probe.mean()) / (z_probe.std() + 1e-12)
+        z0 = (z0 - z0.mean()) / (z0.std() + 1e-12)
+        y = zp - z0
     else:
         y = wp.astype(np.float64)
     yc = y - y.mean()
