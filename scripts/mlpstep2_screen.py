@@ -1,21 +1,27 @@
 #!/usr/bin/env python3
-"""Screen for the open-book (in-sample, capped) MLP step 2 -- the one legal cell the
-step-2 story left untested.
+"""Screen for the open-book (in-sample, capped) MLP step 2, and the attribution
+controls around it.
 
-Design: step 1 stays rp's own in-sample capped kernel solve, byte-identical, and only
-the step-2 estimator varies. Step 2 candidates fit a = (I - P_w) yc
-from the strong reps ON THE SAME ROWS, with the cap swept: hidden width {256, 64} x
-weight decay {0.01, 3, 30}. Score = |prediction|.
+Design: step 1 is selectable (--step1 kernel = rp's own in-sample capped solve,
+--step1 mlp = mlpstep1's cross-fitted wd-30 ensemble), and only the step-2
+estimator varies within a run. Step-2 candidates fit a from the strong reps ON
+THE SAME ROWS, cap swept over weight decay and width; "lin" in the hidden grid
+runs a linear head at matched optimizer and geometry, which is the control that
+separates the cap position from nonlinearity. The target is standardized inside
+the fit, so the wd axis no longer depends on the residual's scale (tables made
+before this change are not comparable row-for-row).
 
-Screen metrics per candidate (screen-level only; tickets go downstream, conclusions
-do not happen here):
-  spearman vs rp        how much it behaves like the deployed kernel step 2
+Screen metrics per candidate (screen-level only; tickets go downstream,
+conclusions do not happen here):
+  spearman vs ref       how much it behaves like the deployed kernel step 2
   spearman vs |a|       how much it collapses onto step-1-only ranking
   corr(v, a)            memorization dial: 1.0 means it just returned its target
-  top-50% overlap vs rp band, errAUROC vs row weak-label correctness, score std
-Reference rows: rp itself and the strong-side-off null (score = |a|).
+  top-50% overlap vs the reference band, errAUROC, score std
+Reference rows: the kernel step 2 itself, |a| (step 2 off), the same kernel on
+z-scored features (the geometry the MLP sees), and the kernel's leave-one-out
+read (what in-sample buys beyond self-inclusion).
 
-Usage: python scripts/mlpstep2_screen.py --acts acts_r1_seed42.npz --out custom_scores_mlpstep2_r1.npz
+Usage: python scripts/mlpstep2_screen.py --acts acts_r1_seed42.npz --csv table.csv
 Ticket slots are chosen by the preregistered rule printed at the end.
 """
 from __future__ import annotations
@@ -27,6 +33,8 @@ import numpy as np
 from compute_pgr import auroc, spearman
 import torch
 from torch import nn
+
+from mlp_rp import _oof_regress
 
 
 def _spearman(x, y):
@@ -47,24 +55,32 @@ def _band_overlap(s1, s2, frac=0.5):
 
 
 class _Head(nn.Module):
-    def __init__(self, d_in: int, hidden: int):
+    def __init__(self, d_in: int, hidden):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(d_in, hidden), nn.GELU(),
-            nn.Linear(hidden, hidden), nn.GELU(),
-            nn.Linear(hidden, 1),
-        )
+        if hidden == "lin":
+            self.net = nn.Linear(d_in, 1)
+        else:
+            self.net = nn.Sequential(
+                nn.Linear(d_in, hidden), nn.GELU(),
+                nn.Linear(hidden, hidden), nn.GELU(),
+                nn.Linear(hidden, 1),
+            )
 
     def forward(self, x):  # noqa: D102
         return self.net(x).squeeze(-1)
 
 
 def insample_mlp_fit_read(Xs, a, hidden, wd, seed, epochs=60, lr=1e-3, bs=256, n_ens=3):
-    """Fit MLPs to a on ALL rows and read predictions on the SAME rows (open book)."""
+    """Fit heads to a on ALL rows and read predictions on the SAME rows (open book).
+
+    The target is scaled to unit std before fitting and the predictions are
+    scaled back, so the same wd means the same cap whatever the residual's
+    scale. hidden may be an int or "lin" for the linear-head control."""
     dev = torch.device("cpu")
     mu = Xs.mean(0, keepdims=True); sd = Xs.std(0, keepdims=True) + 1e-8
     X = torch.tensor((Xs - mu) / sd, dtype=torch.float32, device=dev)
-    y = torch.tensor(a, dtype=torch.float32, device=dev)
+    scale = float(a.std()) + 1e-12
+    y = torch.tensor(a / scale, dtype=torch.float32, device=dev)
     n = X.shape[0]
     v = np.zeros(n, dtype=np.float64)
     for e in range(n_ens):
@@ -83,7 +99,7 @@ def insample_mlp_fit_read(Xs, a, hidden, wd, seed, epochs=60, lr=1e-3, bs=256, n
         model.eval()
         with torch.no_grad():
             v += model(X).double().numpy()
-    return v / n_ens
+    return (v / n_ens) * scale
 
 
 def main():
@@ -91,11 +107,21 @@ def main():
     ap.add_argument("--acts", required=True)
     ap.add_argument("--out", default="")
     ap.add_argument("--reg", type=float, default=0.1)
-    # the corridor peaks around wd=10; my first pass swept {.01, 3, 30} and stepped
-    # right over it, so the default is denser now, orz
+    # the corridor peaks around wd=10 on the pre-standardization instrument; my
+    # first pass swept {.01, 3, 30} and stepped right over it, so the default is
+    # denser now, orz
     ap.add_argument("--wd-grid", default="0.01,0.1,1,3,10,30",
                     help="comma-separated weight decays to sweep")
-    ap.add_argument("--hidden-grid", default="256,64")
+    ap.add_argument("--hidden-grid", default="256,64",
+                    help="widths to sweep; 'lin' runs the linear-head control")
+    ap.add_argument("--step1", choices=["kernel", "mlp"], default="kernel",
+                    help="whose residual the step-2 candidates fit: rp's kernel "
+                         "solve or mlpstep1's cross-fitted wd-30 ensemble")
+    ap.add_argument("--step1-target", choices=["hard", "logit"], default="hard",
+                    help="step-1 target: hard 0/1 weak labels or the probe's "
+                         "logit difference (needs weak_probs in the npz)")
+    ap.add_argument("--seed", type=int, default=7)
+    ap.add_argument("--epochs", type=int, default=60)
     ap.add_argument("--csv", default="", help="optional path to dump the screen table")
     args = ap.parse_args()
 
@@ -107,36 +133,70 @@ def main():
     n = len(wp)
     bad = wp != gt
 
+    if args.step1_target == "logit":
+        probs = np.clip(np.asarray(d["weak_probs"], np.float64), 1e-3, 1 - 1e-3)
+        y = np.log(probs) - np.log1p(-probs)
+    else:
+        y = wp.astype(np.float64)
+    yc = y - y.mean()
+
     with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
-        # step 1: rp's in-sample capped kernel solve, unchanged
-        Xwc = Xw - Xw.mean(0, keepdims=True)
-        Kw = Xwc @ Xwc.T / n
-        rw = args.reg * (np.trace(Kw) / n) + 1e-12
-        yc = wp.astype(np.float64); yc -= yc.mean()
-        a = yc - Kw @ np.linalg.solve(Kw + rw * np.eye(n), yc)
-        # deployed step 2 (kernel) for reference
+        if args.step1 == "mlp":
+            # mlpstep1's step 1, replicated with its shipped hyperparameters
+            p = np.zeros(n, dtype=np.float64)
+            for e in range(3):
+                p += _oof_regress(np.asarray(Xw, np.float32), yc, 5, 256, 60, 1e-3, 256,
+                                  30.0, args.seed + 77 + 131 * e, torch.device("cpu"))
+            a = yc - p / 3
+            ref_name = "ms1 (kernel)"
+        else:
+            Xwc = Xw - Xw.mean(0, keepdims=True)
+            Kw = Xwc @ Xwc.T / n
+            rw = args.reg * (np.trace(Kw) / n) + 1e-12
+            a = yc - Kw @ np.linalg.solve(Kw + rw * np.eye(n), yc)
+            ref_name = "rp (kernel)"
+        # deployed step 2 (kernel) on this residual, for reference
         Xsc = Xs - Xs.mean(0, keepdims=True)
         Ks = Xsc @ Xsc.T / n
         rs = args.reg * (np.trace(Ks) / n) + 1e-12
-        v_rp = Ks @ np.linalg.solve(Ks + rs * np.eye(n), a)
-    s_rp = np.abs(v_rp)
+        Kinv = np.linalg.inv(Ks + rs * np.eye(n))
+        v_ref = Ks @ (Kinv @ a)
+        # the same solve in the geometry the MLP sees (z-scored features)
+        Xz = (Xs - Xs.mean(0, keepdims=True)) / (Xs.std(0, keepdims=True) + 1e-8)
+        Kz = Xz @ Xz.T / n
+        rz = args.reg * (np.trace(Kz) / n) + 1e-12
+        v_z = Kz @ np.linalg.solve(Kz + rz * np.eye(n), a)
+        # leave-one-out read of the kernel: in-sample minus self-inclusion
+        H = Ks @ Kinv
+        hd = np.clip(np.diag(H), None, 1 - 1e-8)
+        v_loo = (v_ref - hd * a) / (1 - hd)
+    if not np.isfinite(a).all() or not np.isfinite(v_ref).all():
+        raise ValueError("non-finite step-1 residual or reference read; check the acts file")
+    s_ref = np.abs(v_ref)
     s_a = np.abs(a)
 
-    print(f"rows {n} | weak-correct {(~bad).mean():.3f}")
-    print(f"{'config':16s} {'sp(rp)':>7s} {'sp(|a|)':>8s} {'corr(v,a)':>10s} {'ovl50':>6s} {'errAUC':>7s} {'std':>6s}")
-    ref_auc_rp, ref_auc_a = _auroc(s_rp, bad), _auroc(s_a, bad)
-    print(f"{'rp (kernel)':16s} {1.0:7.3f} {_spearman(s_rp, s_a):8.3f} {'--':>10s} {1.0:6.2f} {ref_auc_rp:7.3f} {s_rp.std():6.3f}")
-    print(f"{'|a| (no step2)':16s} {_spearman(s_a, s_rp):7.3f} {1.0:8.3f} {'--':>10s} {_band_overlap(s_a, s_rp):6.2f} {ref_auc_a:7.3f} {s_a.std():6.3f}")
+    print(f"rows {n} | weak-correct {(~bad).mean():.3f} | step1 {args.step1} | target {args.step1_target}")
+    print(f"{'config':16s} {'sp(ref)':>7s} {'sp(|a|)':>8s} {'corr(v,a)':>10s} {'ovl50':>6s} {'errAUC':>7s} {'std':>6s}")
+    ref_auc, ref_auc_a = _auroc(s_ref, bad), _auroc(s_a, bad)
+    print(f"{ref_name:16s} {1.0:7.3f} {_spearman(s_ref, s_a):8.3f} {'--':>10s} {1.0:6.2f} {ref_auc:7.3f} {s_ref.std():6.3f}")
+    print(f"{'|a| (no step2)':16s} {_spearman(s_a, s_ref):7.3f} {1.0:8.3f} {'--':>10s} {_band_overlap(s_a, s_ref):6.2f} {ref_auc_a:7.3f} {s_a.std():6.3f}")
+    for nm, vv in (("ridge z-scored", v_z), ("kernel LOO", v_loo)):
+        ss = np.abs(vv)
+        print(f"{nm:16s} {_spearman(ss, s_ref):7.3f} {_spearman(ss, s_a):8.3f} "
+              f"{float(np.corrcoef(vv, a)[0, 1]):10.3f} {_band_overlap(ss, s_ref):6.2f} "
+              f"{_auroc(ss, bad):7.3f} {ss.std():6.3f}")
 
     results = {}
-    for hidden in [int(h) for h in args.hidden_grid.split(",")]:
+    hiddens = [h.strip() for h in args.hidden_grid.split(",")]
+    for hidden in [("lin" if h == "lin" else int(h)) for h in hiddens]:
         for wd in [float(w) for w in args.wd_grid.split(",")]:
-            v = insample_mlp_fit_read(np.asarray(Xs, np.float32), a, hidden, wd, seed=7)
+            v = insample_mlp_fit_read(np.asarray(Xs, np.float32), a, hidden, wd,
+                                      seed=args.seed, epochs=args.epochs)
             s = np.abs(v)
             row = dict(hidden=hidden, wd=wd,
-                       sp_rp=_spearman(s, s_rp), sp_a=_spearman(s, s_a),
+                       sp_rp=_spearman(s, s_ref), sp_a=_spearman(s, s_a),
                        corr_va=float(np.corrcoef(v, a)[0, 1]),
-                       ovl=_band_overlap(s, s_rp), auc=_auroc(s, bad), std=float(s.std()))
+                       ovl=_band_overlap(s, s_ref), auc=_auroc(s, bad), std=float(s.std()))
             results[f"h{hidden}_wd{wd:g}"] = (s, row)
             print(f"{f'h{hidden}_wd{wd:g}':16s} {row['sp_rp']:7.3f} {row['sp_a']:8.3f} "
                   f"{row['corr_va']:10.3f} {row['ovl']:6.2f} {row['auc']:7.3f} {row['std']:6.3f}",
@@ -150,13 +210,14 @@ def main():
                 w.writerow(row)
         print(f"wrote {args.csv}")
 
-    # preregistered ticket rule: among non-degenerate configs (corr(v,a) < 0.95),
-    # cs1 = highest spearman vs rp (the best-behaved open-book MLP step 2);
-    # cs2 = the non-degenerate config most different from rp (lowest 50% overlap)
-    # with errAUROC at least |a|'s (so "different" is not just "broken").
-    ok = {k: v for k, v in results.items() if v[1]["corr_va"] < 0.95}
+    # preregistered ticket rule: among non-degenerate configs (corr(v,a) < 0.95
+    # and a score std that is not float dust), cs1 = highest spearman vs the
+    # reference; cs2 = the non-degenerate config most different from it (lowest
+    # 50% overlap) with errAUROC at least |a|'s.
+    ok = {k: v for k, v in results.items()
+          if v[1]["corr_va"] < 0.95 and v[1]["std"] > 1e-6}
     if not ok:
-        print("all configs degenerate (corr(v,a) >= .95); no tickets")
+        print("all configs degenerate; no tickets")
         return
     cs1 = max(ok, key=lambda k: ok[k][1]["sp_rp"])
     div = {k: v for k, v in ok.items() if v[1]["auc"] >= ref_auc_a and k != cs1}
