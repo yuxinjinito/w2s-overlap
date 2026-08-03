@@ -286,11 +286,24 @@ def parse_args() -> argparse.Namespace:
         "--purity-grid",
         default="",
         help=(
-            "Comma-separated target purities in percent (e.g. 50,60,80,90,100) for the "
-            "purity_grid runs: one random subset at the random-control budget, weak labels "
-            "flipped toward or away from gold to hit each target. Diagnostic; uses gold."
+            "Comma-separated target purities in percent (e.g. 50,60,80,90,100; the token "
+            "'nat' targets the subset's own natural purity) for the purity_grid runs: one "
+            "random subset at the random-control budget, labels set to each target purity. "
+            "Diagnostic; uses gold."
         ),
     )
+    parser.add_argument(
+        "--purity-mode",
+        choices=["relabel", "iid"],
+        default="relabel",
+        help=(
+            "relabel: start from the natural weak labels and flip toward/away from gold "
+            "(errors stay structured). iid: start from gold and corrupt uniformly chosen "
+            "rows (errors are position-random at every purity)."
+        ),
+    )
+    parser.add_argument("--purity-draws", type=int, default=1,
+                        help="independent corruption draws per purity target (iid mode)")
     parser.add_argument("--random-control-count", type=int, default=3)
     parser.add_argument("--random-control-size", type=int, default=None)
     parser.add_argument("--random-unbalanced-size", type=int, default=None)
@@ -328,6 +341,7 @@ def requested_runs(args: argparse.Namespace) -> list[str]:
         "weak_strong_agree_balanced",
         "weak_strong_disagree_balanced",
         "purity_grid",
+        "purity_natural",
         "rp_weighted",
         "el_weighted",
         "conf_weighted",
@@ -1860,10 +1874,11 @@ def build_run_plan(
             random_run_names.append(run_name)
             runs.append(run_name)
 
-    if "purity_grid" in runs:
+    if "purity_grid" in runs or "purity_natural" in runs:
         # one fixed random subset, labels moved to each target purity: selection
-        # never sees the scores, so the line isolates label quality (07/29 ask)
-        runs = [name for name in runs if name != "purity_grid"]
+        # never sees the scores, so the line isolates label quality (07/29 ask).
+        # Natural point, relabel line, and iid line all share this subset, so
+        # the comparisons are paired.
         gold_all = [int(x) for x in strong_train_labels]
         base_sel = random_balanced_indices(
             weak_preds_strong, random_control_size, args.seed + SEED_OFFSETS["purity_flip"]
@@ -1871,14 +1886,37 @@ def build_run_plan(
         sub_examples = [strong_examples[int(i)] for i in base_sel]
         sub_weak = [weak_labels[int(i)] for i in base_sel]
         sub_gold = [gold_all[int(i)] for i in base_sel]
-        for pt in [int(x) for x in args.purity_grid.split(",") if x.strip()]:
-            run_name = f"random_purity_p{pt}"
-            rng = np.random.default_rng(args.seed + SEED_OFFSETS["purity_flip"] + pt)
-            run_subsets[run_name] = (
-                sub_examples,
-                flip_labels_to_purity(sub_weak, sub_gold, pt / 100.0, rng),
-            )
-            runs.append(run_name)
+        nat_purity = float(np.mean([w == g for w, g in zip(sub_weak, sub_gold)]))
+    if "purity_natural" in runs:
+        runs = [name for name in runs if name != "purity_natural"]
+        run_subsets["random_purity_natural"] = (sub_examples, list(sub_weak))
+        runs.append("random_purity_natural")
+    if "purity_grid" in runs:
+        runs = [name for name in runs if name != "purity_grid"]
+        targets = []
+        for tok in [x.strip() for x in args.purity_grid.split(",") if x.strip()]:
+            targets.append(("nat", nat_purity) if tok == "nat" else (tok, int(tok) / 100.0))
+        n_draws = max(1, args.purity_draws) if args.purity_mode == "iid" else 1
+        for tag, target in targets:
+            pt_off = int(round(target * 100))
+            for draw in range(n_draws):
+                if args.purity_mode == "iid":
+                    # errors at uniformly random positions: start from gold, corrupt
+                    rng = np.random.default_rng(
+                        args.seed + SEED_OFFSETS["purity_iid"] + pt_off + 200 * draw
+                    )
+                    n_sub = len(sub_gold)
+                    labels = list(sub_gold)
+                    n_wrong = int(round((1.0 - target) * n_sub))
+                    for i in rng.choice(n_sub, size=n_wrong, replace=False):
+                        labels[int(i)] = 1 - labels[int(i)]
+                    run_name = f"random_purity_iid_p{tag}" + (f"_d{draw}" if n_draws > 1 else "")
+                else:
+                    rng = np.random.default_rng(args.seed + SEED_OFFSETS["purity_flip"] + pt_off)
+                    labels = flip_labels_to_purity(sub_weak, sub_gold, target, rng)
+                    run_name = f"random_purity_p{tag}"
+                run_subsets[run_name] = (sub_examples, labels)
+                runs.append(run_name)
     return {
         "runs": runs,
         "run_subsets": run_subsets,

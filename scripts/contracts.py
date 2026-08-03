@@ -99,6 +99,7 @@ SEED_OFFSETS = {
     "l2robust_high": 35000,
     "l2robust_low": 35500,
     "purity_flip": 36000,           # + target percent per grid point
+    "purity_iid": 37000,            # + target percent + 200*draw
 }
 
 _vals = list(SEED_OFFSETS.values())
